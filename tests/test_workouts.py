@@ -164,3 +164,20 @@ def test_summary_works_on_a_database_built_before_workout_stat(tmp_path):
     conn.commit()
     (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
     assert (w.n, w.total_min, w.total_distance_km, w.total_energy_kcal, w.avg_heart_rate) == (1, 60.0, None, None, None)
+
+
+def test_legacy_and_new_exports_of_one_workout_do_not_double_count(tmp_path):
+    """Old export: attributes only. Newer export of the same workout: statistics. One DB."""
+    legacy = 'totalDistance="5" totalDistanceUnit="km" totalEnergyBurned="300" totalEnergyBurnedUnit="kcal"'
+    conn, _, _, db = _ingest(tmp_path, _workout(extra=legacy))
+    conn.close()
+    newer = tmp_path / "newer.zip"
+    body = _stat(DIST, "km", sum="5") + _stat(ENERGY, "kcal", sum="300")
+    with zipfile.ZipFile(newer, "w") as zf:
+        zf.writestr("apple_health_export/export.xml", f"<HealthData>{_workout(body)}</HealthData>")
+    ingest(newer, db, progress=lambda *_: None)
+
+    conn = connect(db, create=False)
+    assert conn.execute("SELECT COUNT(*) FROM workout").fetchone()[0] == 1
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert (w.total_distance_km, w.total_energy_kcal) == (5.0, 300.0)
