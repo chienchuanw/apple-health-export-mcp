@@ -12,6 +12,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nested in `<WorkoutActivity>`) with a fallback to the legacy `totalDistance` /
   `totalEnergyBurned` attributes. Stored in a new `workout_stat` table; re-run ingest
   to populate it for an existing database (ADR-0011).
+- A workout without a heart-rate statistic takes `avg_heart_rate` from the
+  `HeartRate` samples recorded during it, when there is at least one per minute
+  (ADR-0012). Applies to existing databases without re-ingest.
 - Synthetic export fixture with known ground truth (`tests/fixtures/synthetic.py`)
   and end-to-end tests for dedupe, sleep, workouts and idempotent re-ingest.
 

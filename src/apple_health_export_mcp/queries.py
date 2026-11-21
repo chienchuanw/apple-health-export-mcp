@@ -217,6 +217,15 @@ def _factor(col: str, table: dict[str, float]) -> str:
     return f"(CASE {col} {whens} END)"
 
 
+def _utc(col: str) -> str:
+    """SQL julianday (UTC) of an Apple timestamp '2026-06-18 07:00:00 +0300'.
+
+    Rewrites the offset as '+03:00', the form SQLite's date functions apply. Text
+    comparison would be wrong across offsets. Interpolates column names only.
+    """
+    return f"julianday(substr({col}, 1, 19) || substr({col}, 21, 3) || ':' || substr({col}, 24, 2))"
+
+
 # Stand-in for workout_stat on a DB built before it existed (0.1.1): the read-only
 # server can't create the table, so stats read as NULL until the user re-ingests.
 _NO_STATS = "(SELECT NULL workout_key, NULL type, NULL unit, NULL sum, NULL average WHERE 0)"
@@ -228,14 +237,16 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
     Durations are converted from `durationUnit` (missing unit = minutes, Apple's
     default). Distance sums every HKQuantityTypeIdentifierDistance* statistic (or the
     legacy totalDistance attribute) in km; energy is active energy in kcal. Average
-    heart rate is weighted by workout duration over workouts that have one.
+    heart rate is weighted by workout duration over workouts that have one: the HR
+    statistic, else the mean of HeartRate samples during the workout when there is at
+    least one per minute (sparser readings leave it null).
     """
     has_stats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workout_stat'").fetchone()
     stats = "workout_stat" if has_stats else _NO_STATS
     rows = conn.execute(
         f"""
         WITH w AS (
-            SELECT key, activity,
+            SELECT key, activity, local_date, end, {_utc("start")} t0, {_utc("end")} t1,
                    duration * {_factor("COALESCE(duration_unit, 'min')", _TO_MIN)} dur_min
             FROM workout WHERE local_date BETWEEN ? AND ?),
         st AS (
@@ -252,14 +263,30 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
                        MAX(CASE WHEN type = 'totalEnergyBurned' THEN sum * {_factor("unit", _TO_KCAL)} END)) kcal,
                    MAX(CASE WHEN type = 'HKQuantityTypeIdentifierHeartRate' THEN average END) hr
             FROM {stats} WHERE workout_key IN (SELECT key FROM w)
-            GROUP BY workout_key)
+            GROUP BY workout_key),
+        hs AS (
+            -- No HR statistic: average the HeartRate samples recorded during the workout,
+            -- compared as UTC instants. local_date only bounds the index scan (±1 day for
+            -- a sample written under another offset).
+            SELECT w.key, AVG(CAST(r.value AS REAL)) hr, COUNT(*) n
+            FROM w JOIN record r
+              ON r.type = 'HKQuantityTypeIdentifierHeartRate'
+             AND r.local_date BETWEEN date(w.local_date, '-1 day') AND date(substr(w.end, 1, 10), '+1 day')
+             AND {_utc("r.start")} BETWEEN w.t0 AND w.t1
+            WHERE w.key NOT IN (SELECT workout_key FROM st WHERE hr IS NOT NULL)
+            GROUP BY w.key),
+        wh AS (
+            SELECT w.*, st.km, st.kcal,
+                   -- Sparse background readings don't describe a workout: need >= 1/min.
+                   COALESCE(st.hr, CASE WHEN hs.n >= w.dur_min THEN hs.hr END) hr
+            FROM w LEFT JOIN st ON st.workout_key = w.key LEFT JOIN hs ON hs.key = w.key)
         SELECT activity, COUNT(*) n,
                ROUND(SUM(dur_min), 1) total_min,
                ROUND(AVG(dur_min), 1) avg_min,
                ROUND(SUM(km), 2) total_distance_km,
                ROUND(SUM(kcal), 1) total_energy_kcal,
                ROUND(SUM(hr * dur_min) / SUM(CASE WHEN hr IS NOT NULL THEN dur_min END), 1) avg_heart_rate
-        FROM w LEFT JOIN st ON st.workout_key = w.key
+        FROM wh
         GROUP BY activity ORDER BY n DESC
         """,
         (start, end),
