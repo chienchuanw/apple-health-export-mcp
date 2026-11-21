@@ -16,7 +16,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from apple_health_export_mcp import queries
-from apple_health_export_mcp.db import connect
+from apple_health_export_mcp.db import connect_readonly
 
 # All tools only read a local, fixed DB: safe to retry, no side effects, no open world.
 READONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
@@ -58,11 +58,12 @@ Source = Annotated[
 def _store():
     """Open the health DB for the duration of one tool call.
 
+    Read-only (`mode=ro`): the server can never modify the DB, even via a bug.
     Surfaces a clean ToolError (instead of a raw traceback) when the DB hasn't
     been built yet, and always closes the connection.
     """
     try:
-        conn = connect(create=False)
+        conn = connect_readonly()
     except FileNotFoundError as e:
         raise ToolError(str(e)) from e
     try:

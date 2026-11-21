@@ -66,16 +66,35 @@ def _make_private(p: Path) -> None:
             os.chmod(f, 0o600)
 
 
+def _require(p: Path) -> None:
+    if not p.exists():
+        raise FileNotFoundError(
+            f"No database at {p}. Run `apple-health-export-mcp-ingest <export.zip>` first "
+            f"(set AH_DB_PATH to control the location)."
+        )
+
+
 def connect(path: Path | None = None, *, create: bool = True) -> sqlite3.Connection:
+    """Read-write connection — for ingest. The server uses `connect_readonly`."""
     p = path or db_path()
     if create:
         _make_private(p)
-    elif not p.exists():
-        raise FileNotFoundError(
-            f"No database at {p}. Run `apple-health-export-mcp ingest <export.zip>` first "
-            f"(set AH_DB_PATH to control the location)."
-        )
+    else:
+        _require(p)
     conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
+    """Read-only connection (SQLite `mode=ro`) — every MCP tool goes through this.
+
+    The URI is built by pathlib (`as_uri()` percent-encodes spaces, `#`, `?`, `%`),
+    so an arbitrary DB path cannot inject extra URI parameters.
+    """
+    p = (path or db_path()).resolve()
+    _require(p)
+    conn = sqlite3.connect(f"{p.as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
