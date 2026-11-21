@@ -6,6 +6,34 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `get_workouts` now also returns `total_distance_km`, `total_energy_kcal` and a
+  duration-weighted `avg_heart_rate`, parsed from `<WorkoutStatistics>` (direct or
+  nested in `<WorkoutActivity>`) with a fallback to the legacy `totalDistance` /
+  `totalEnergyBurned` attributes. Stored in a new `workout_stat` table; re-run ingest
+  to populate it for an existing database (ADR-0011).
+- Synthetic export fixture with known ground truth (`tests/fixtures/synthetic.py`)
+  and end-to-end tests for dedupe, sleep, workouts and idempotent re-ingest.
+
+### Changed
+- Dependency bound tightened to `fastmcp>=3.4.10,<5`; lockfile refreshed.
+- CI actions are pinned to full commit SHAs; CI runs with `contents: read` and does
+  not persist the checkout token.
+
+### Fixed
+- `get_workouts` `total_min` / `avg_min` honor `durationUnit` (hours and seconds were
+  summed as minutes). Applies to existing databases without re-ingest.
+- Coaching prompts named metrics by short names (`StepCount`, `RestingHeartRate`…),
+  which `get_quantity` never matches; they now use full `HKQuantityTypeIdentifier…` ids.
+- The missing-database hint named `apple-health-export-mcp ingest` instead of the real
+  `apple-health-export-mcp-ingest` command.
+
+### Security
+- The health database (and its `-wal` / `-shm` files) is created owner-only (`0600`),
+  a directory it creates is `0700`, and an existing database is tightened on ingest.
+- The MCP server opens the database read-only (SQLite `mode=ro` via a
+  percent-encoded `file:` URI); only ingest writes.
+
 ## [0.1.1] - 2026-06-30
 
 ### Changed
