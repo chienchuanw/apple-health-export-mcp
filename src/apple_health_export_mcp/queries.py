@@ -61,6 +61,7 @@ class WorkoutSummary:
     n: int
     total_min: float | None
     avg_min: float | None
+    max_min: float | None  # longest single workout; far above avg_min = likely left running
     total_distance_km: float | None
     total_energy_kcal: float | None
     avg_heart_rate: float | None  # bpm, weighted by workout duration
@@ -234,6 +235,9 @@ _NO_STATS = "(SELECT NULL workout_key, NULL type, NULL unit, NULL sum, NULL aver
 def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSummary]:
     """Per-activity workout summary in range: count, minutes, distance, energy, heart rate.
 
+    `max_min` is the longest single workout, so a session left running (a forgotten
+    stop) is visible instead of hiding in total_min/avg_min. Nothing is excluded.
+
     Durations are converted from `durationUnit` (missing unit = minutes, Apple's
     default). Distance sums every HKQuantityTypeIdentifierDistance* statistic (or the
     legacy totalDistance attribute) in km; energy is active energy in kcal. Average
@@ -283,6 +287,7 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
         SELECT activity, COUNT(*) n,
                ROUND(SUM(dur_min), 1) total_min,
                ROUND(AVG(dur_min), 1) avg_min,
+               ROUND(MAX(dur_min), 1) max_min,
                ROUND(SUM(km), 2) total_distance_km,
                ROUND(SUM(kcal), 1) total_energy_kcal,
                ROUND(SUM(hr * dur_min) / SUM(CASE WHEN hr IS NOT NULL THEN dur_min END), 1) avg_heart_rate
@@ -297,6 +302,7 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
             r["n"],
             r["total_min"],
             r["avg_min"],
+            r["max_min"],
             r["total_distance_km"],
             r["total_energy_kcal"],
             r["avg_heart_rate"],

@@ -83,9 +83,10 @@ def test_one_run_per_day_with_distance_energy_heart_rate(synthetic):
 def test_thirty_day_workout_totals(synthetic):
     conn, *_ = synthetic
     (w,) = queries.workouts(conn, FIRST, LAST)
-    assert (w.n, w.total_min, w.total_distance_km, w.total_energy_kcal, w.avg_heart_rate) == (
+    assert (w.n, w.total_min, w.max_min, w.total_distance_km, w.total_energy_kcal, w.avg_heart_rate) == (
         30,
         900.0,
+        30.0,
         150.0,
         9000.0,
         150.0,
