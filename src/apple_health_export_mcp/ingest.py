@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import zipfile
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -38,8 +39,90 @@ def _key(*parts: str | None) -> bytes:
     return hashlib.blake2b("|".join(p or "" for p in parts).encode(), digest_size=16).digest()
 
 
+_STAT_FIELDS = ("sum", "average", "minimum", "maximum")
+
+
+def _num(v: str | None) -> float | None:
+    return float(v) if v else None
+
+
+def _stat(el) -> dict:
+    """One <WorkoutStatistics> element as a dict (values as floats, unit raw)."""
+    return {
+        "unit": el.get("unit"),
+        **{k: _num(el.get(k)) for k in _STAT_FIELDS},
+        "start": el.get("startDate"),
+        "end": el.get("endDate"),
+    }
+
+
+def _minutes(st: dict) -> float | None:
+    try:
+        fmt = "%Y-%m-%d %H:%M:%S %z"
+        return (datetime.strptime(st["end"], fmt) - datetime.strptime(st["start"], fmt)).total_seconds() / 60
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge(parts: list[dict]) -> dict:
+    """Combine one type's statistics from several <WorkoutActivity> segments.
+
+    Totals add, extremes take min/max, the average is weighted by segment time
+    (plain mean if a segment's time is unknown). Only used when the Workout has no
+    direct, whole-workout statistic for that type.
+    """
+    if len(parts) == 1:
+        return parts[0]
+
+    def vals(k):
+        return [p[k] for p in parts if p[k] is not None]
+
+    avgs = [(p["average"], _minutes(p)) for p in parts if p["average"] is not None]
+    if avgs and all(m for _, m in avgs):
+        average = sum(a * m for a, m in avgs) / sum(m for _, m in avgs)
+    else:
+        average = sum(a for a, _ in avgs) / len(avgs) if avgs else None
+    sums, starts, ends = vals("sum"), vals("start"), vals("end")
+    return {
+        "unit": parts[0]["unit"],  # ponytail: segments of one workout share a unit in practice
+        "sum": sum(sums) if sums else None,
+        "average": average,
+        "minimum": min(vals("minimum"), default=None),
+        "maximum": max(vals("maximum"), default=None),
+        "start": min(starts) if starts else None,
+        "end": max(ends) if ends else None,
+    }
+
+
+def _workout_stats(elem, key: bytes) -> list[tuple]:
+    """Statistics rows for one <Workout>; must run before elem.clear(). ADR-0011.
+
+    Direct <WorkoutStatistics> children are whole-workout values and win over the
+    per-segment ones nested in <WorkoutActivity> (iOS 16+). Older exports have no
+    statistics, only totalDistance/totalEnergyBurned attributes — used as a fallback.
+    """
+    nested: dict[str, list[dict]] = {}
+    for ws in elem.iterfind("WorkoutActivity/WorkoutStatistics"):
+        nested.setdefault(ws.get("type", ""), []).append(_stat(ws))
+    stats = {t: _merge(parts) for t, parts in nested.items()}
+    for ws in elem.iterfind("WorkoutStatistics"):
+        stats[ws.get("type", "")] = _stat(ws)
+
+    a = elem.attrib
+    if a.get("totalDistance") and not any(t.startswith("HKQuantityTypeIdentifierDistance") for t in stats):
+        stats["totalDistance"] = {"unit": a.get("totalDistanceUnit"), "sum": float(a["totalDistance"])}
+    if a.get("totalEnergyBurned") and "HKQuantityTypeIdentifierActiveEnergyBurned" not in stats:
+        stats["totalEnergyBurned"] = {"unit": a.get("totalEnergyBurnedUnit"), "sum": float(a["totalEnergyBurned"])}
+
+    start, end = a.get("startDate"), a.get("endDate")
+    return [
+        (key, t, st["unit"], *(st.get(k) for k in _STAT_FIELDS), st.get("start") or start, st.get("end") or end)
+        for t, st in stats.items()
+    ]
+
+
 def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
-    """Yield ('record'|'workout', row_tuple) for each relevant element, freeing memory."""
+    """Yield ('record'|'workout'|'workout_stat', row_tuple) per relevant element, freeing memory."""
     for _event, elem in ET.iterparse(stream, events=("end",)):
         tag = elem.tag
         if tag == "Record":
@@ -61,8 +144,9 @@ def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
         elif tag == "Workout":
             a = elem.attrib
             start = a.get("startDate", "")
+            key = _key(a.get("workoutActivityType"), a.get("sourceName"), start, a.get("endDate"), a.get("duration"))
             row = (
-                _key(a.get("workoutActivityType"), a.get("sourceName"), start, a.get("endDate"), a.get("duration")),
+                key,
                 a.get("workoutActivityType", ""),
                 float(a["duration"]) if a.get("duration") else None,
                 a.get("durationUnit"),
@@ -73,6 +157,8 @@ def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
                 start[:10],
             )
             yield "workout", row
+            for stat_row in _workout_stats(elem, key):
+                yield "workout_stat", stat_row
             elem.clear()
         elif tag in ("Correlation", "ActivitySummary", "Me", "ExportDate"):
             elem.clear()  # not stored in v1; free memory
@@ -86,6 +172,12 @@ _WK_SQL = (
     "(key,activity,duration,duration_unit,source,start,end,created,local_date)"
     " VALUES (?,?,?,?,?,?,?,?,?)"
 )
+_STAT_SQL = (
+    "INSERT OR IGNORE INTO workout_stat"
+    "(workout_key,type,unit,sum,average,minimum,maximum,start,end)"
+    " VALUES (?,?,?,?,?,?,?,?,?)"
+)
+_SQL = {"record": _REC_SQL, "workout": _WK_SQL, "workout_stat": _STAT_SQL}
 
 
 def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[str, int]:
@@ -96,17 +188,14 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=OFF")
 
-    counts = {"record": 0, "workout": 0}
-    rec_batch: list[tuple] = []
-    wk_batch: list[tuple] = []
+    counts = dict.fromkeys(_SQL, 0)
+    batches: dict[str, list[tuple]] = {k: [] for k in _SQL}
 
     def flush() -> None:
-        if rec_batch:
-            conn.executemany(_REC_SQL, rec_batch)
-            rec_batch.clear()
-        if wk_batch:
-            conn.executemany(_WK_SQL, wk_batch)
-            wk_batch.clear()
+        for kind, rows in batches.items():
+            if rows:
+                conn.executemany(_SQL[kind], rows)
+                rows.clear()
         conn.commit()
 
     with zipfile.ZipFile(zip_path) as zf:
@@ -114,12 +203,9 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
         progress(f"Reading {main} ...")
         with zf.open(main) as stream:
             for kind, row in _iter_rows(stream):
-                if kind == "record":
-                    rec_batch.append(row)
-                else:
-                    wk_batch.append(row)
+                batches[kind].append(row)
                 counts[kind] += 1
-                if (counts["record"] + counts["workout"]) % BATCH == 0:
+                if kind != "workout_stat" and (counts["record"] + counts["workout"]) % BATCH == 0:
                     flush()
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
