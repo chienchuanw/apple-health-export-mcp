@@ -131,7 +131,9 @@ def get_workouts(start: DateStr, end: DateStr) -> list[queries.WorkoutSummary]:
 
     Returns [{activity, n, total_min, avg_min, total_distance_km, total_energy_kcal,
     avg_heart_rate}]. Units are normalized (km, kcal, minutes); avg_heart_rate (bpm) is
-    weighted by workout duration. A field is null when the export has no such data.
+    weighted by workout duration, and comes from the workout's heart-rate statistic or,
+    without one, from heart-rate samples recorded during it (if at least one per minute).
+    A field is null when the export has no such data.
     """
     with _store() as conn:
         return queries.workouts(conn, start, end)
