@@ -38,7 +38,7 @@ def test_ingest_parses_and_is_idempotent(tmp_path):
     _make_zip(zip_path)
 
     counts = ingest(zip_path, db, progress=lambda *_: None)
-    assert counts == {"record": 3, "workout": 1}
+    assert counts == {"record": 3, "workout": 1, "workout_stat": 0}
 
     conn = connect(db, create=False)
     # local_date is the first 10 chars of the offset-local timestamp (ADR-0009).
