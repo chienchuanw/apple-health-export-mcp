@@ -39,9 +39,10 @@ def daily_summary(day: _DayArg = "") -> str:
     day = day or _today()
     return (
         f"Summarize my health on {day}. Use the apple-health tools: get_quantity for steps "
-        f"(StepCount, sum), active energy (ActiveEnergyBurned, sum) and resting heart rate "
-        f"(RestingHeartRate, avg); get_sleep for the night ending {day}; get_workouts for any "
-        f"session that day. Give a short snapshot of how the day looked. {_REPLY}"
+        f"(HKQuantityTypeIdentifierStepCount, sum), active energy "
+        f"(HKQuantityTypeIdentifierActiveEnergyBurned, sum) and resting heart rate "
+        f"(HKQuantityTypeIdentifierRestingHeartRate, avg); get_sleep for the night ending {day}; "
+        f"get_workouts for any session that day. Give a short snapshot of how the day looked. {_REPLY}"
     )
 
 
@@ -52,9 +53,10 @@ def weekly_review(
     start, end = _week_range(week_of or _today())
     return (
         f"Review the calendar week {start} to {end} (Monday–Sunday). Use get_workouts for training "
-        f"load, get_sleep for nightly sleep, get_quantity for daily steps (StepCount, sum) and "
-        f"resting heart rate (RestingHeartRate, avg, bucket=day). Assess whether recovery is keeping "
-        f"up with load and whether to push or pull back volume next week. {_REPLY}"
+        f"load, get_sleep for nightly sleep, get_quantity for daily steps "
+        f"(HKQuantityTypeIdentifierStepCount, sum) and resting heart rate "
+        f"(HKQuantityTypeIdentifierRestingHeartRate, avg, bucket=day). Assess whether recovery is "
+        f"keeping up with load and whether to push or pull back volume next week. {_REPLY}"
     )
 
 
@@ -64,9 +66,11 @@ def monthly_summary(
     """A month in review: totals, averages, body-weight change, and trend."""
     month = month or _today()[:7]
     return (
-        f"Summarize the month {month}. Use get_quantity (bucket=week) for steps (StepCount, sum), "
-        f"resting heart rate (RestingHeartRate, avg) and body weight (BodyMass, avg); get_workouts "
-        f"and get_sleep across the month. Report totals/averages, how body weight changed, and the "
+        f"Summarize the month {month}. Use get_quantity (bucket=week) for steps "
+        f"(HKQuantityTypeIdentifierStepCount, sum), resting heart rate "
+        f"(HKQuantityTypeIdentifierRestingHeartRate, avg) and body weight "
+        f"(HKQuantityTypeIdentifierBodyMass, avg); get_workouts and get_sleep across the month. "
+        f"Report totals/averages, how body weight changed, and the "
         f"overall trend versus a healthy month. {_REPLY}"
     )
 
@@ -78,8 +82,10 @@ def yearly_summary(
     year = year or _today()[:4]
     return (
         f"Give a year-in-review for {year}. Use get_quantity (bucket=month) for body weight "
-        f"(BodyMass, avg), resting heart rate (RestingHeartRate, avg) and VO2Max (VO2Max, avg, "
-        f"if present), plus monthly steps (StepCount, sum); get_workouts for total training. "
+        f"(HKQuantityTypeIdentifierBodyMass, avg), resting heart rate "
+        f"(HKQuantityTypeIdentifierRestingHeartRate, avg) and VO2Max "
+        f"(HKQuantityTypeIdentifierVO2Max, avg, if present), plus monthly steps "
+        f"(HKQuantityTypeIdentifierStepCount, sum); get_workouts for total training. "
         f"Describe the fitness trajectory over the year and the biggest changes. {_REPLY}"
     )
 
@@ -88,8 +94,9 @@ def readiness_check() -> str:
     """Should I train hard today? Based on last night's sleep and recent recovery markers."""
     return (
         "Assess whether I'm ready to train hard today. Use get_sleep for last night, and "
-        "get_quantity for resting heart rate (RestingHeartRate, avg, bucket=day) and HRV "
-        "(HeartRateVariabilitySDNN, avg, bucket=day) over the last ~10 days to judge recovery. "
+        "get_quantity for resting heart rate (HKQuantityTypeIdentifierRestingHeartRate, avg, "
+        "bucket=day) and HRV (HKQuantityTypeIdentifierHeartRateVariabilitySDNN, avg, bucket=day) "
+        "over the last ~10 days to judge recovery. "
         "Compare last night and today's markers to my recent baseline, then recommend: full "
         f"intensity, moderate, or rest. {_REPLY}"
     )
