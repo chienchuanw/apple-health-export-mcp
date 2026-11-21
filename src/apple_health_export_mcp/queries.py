@@ -240,10 +240,16 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
             FROM workout WHERE local_date BETWEEN ? AND ?),
         st AS (
             SELECT workout_key,
-                   SUM(CASE WHEN type LIKE 'HKQuantityTypeIdentifierDistance%' OR type = 'totalDistance'
-                            THEN sum * {_factor("unit", _TO_KM)} END) km,
-                   SUM(CASE WHEN type IN ('HKQuantityTypeIdentifierActiveEnergyBurned', 'totalEnergyBurned')
-                            THEN sum * {_factor("unit", _TO_KCAL)} END) kcal,
+                   -- Legacy attribute only when the workout has no statistic: a later
+                   -- export of the same workout may add one (ADR-0011).
+                   COALESCE(
+                       SUM(CASE WHEN type LIKE 'HKQuantityTypeIdentifierDistance%'
+                                THEN sum * {_factor("unit", _TO_KM)} END),
+                       MAX(CASE WHEN type = 'totalDistance' THEN sum * {_factor("unit", _TO_KM)} END)) km,
+                   COALESCE(
+                       SUM(CASE WHEN type = 'HKQuantityTypeIdentifierActiveEnergyBurned'
+                                THEN sum * {_factor("unit", _TO_KCAL)} END),
+                       MAX(CASE WHEN type = 'totalEnergyBurned' THEN sum * {_factor("unit", _TO_KCAL)} END)) kcal,
                    MAX(CASE WHEN type = 'HKQuantityTypeIdentifierHeartRate' THEN average END) hr
             FROM {stats} WHERE workout_key IN (SELECT key FROM w)
             GROUP BY workout_key)
