@@ -16,7 +16,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and end-to-end tests for dedupe, sleep, workouts and idempotent re-ingest.
 
 ### Changed
-- Dependency bound tightened to `fastmcp>=3.4.10,<5`; lockfile refreshed.
+- Dependency bound tightened to `fastmcp>=3.4.10,<4` (stay on the 3.x major); lockfile refreshed.
 - CI actions are pinned to full commit SHAs; CI runs with `contents: read` and does
   not persist the checkout token.
 
