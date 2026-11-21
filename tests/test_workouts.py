@@ -296,3 +296,21 @@ def test_samples_on_both_sides_of_midnight_are_used(tmp_path):
     )
     conn, *_ = _ingest(tmp_path, _workout(start=late, end=early), samples)
     assert _hr(conn) == 150.0
+
+
+# --- Longest workout per activity (issue #5) --------------------------------------
+
+
+def test_max_min_exposes_a_workout_left_running(tmp_path):
+    """A forgotten stop inflates the totals; max_min lets the caller see it."""
+    t2, t3 = "2026-06-19 07:00:00 +0300", "2026-06-22 07:00:00 +0300"
+    forgotten = _workout(duration="72", unit="hr", start=t2, end=t3)
+    conn, *_ = _ingest(tmp_path, _workout(), _workout(duration="1800", unit="s", start=T1, end=T1), forgotten)
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-19")
+    assert (w.n, w.total_min, w.avg_min, w.max_min) == (3, 4380.0, 1460.0, 4320.0)
+
+
+def test_max_min_is_null_when_no_duration_is_known(tmp_path):
+    conn, *_ = _ingest(tmp_path, _workout(unit="fortnight"))
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert w.max_min is None
