@@ -15,6 +15,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A workout without a heart-rate statistic takes `avg_heart_rate` from the
   `HeartRate` samples recorded during it, when there is at least one per minute
   (ADR-0012). Applies to existing databases without re-ingest.
+- `get_workouts` reports `max_min`, the longest single workout per activity, so a
+  session left running is visible instead of hiding in `total_min` / `avg_min`.
 - Synthetic export fixture with known ground truth (`tests/fixtures/synthetic.py`)
   and end-to-end tests for dedupe, sleep, workouts and idempotent re-ingest.
 
