@@ -285,8 +285,10 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
         wh AS (
             SELECT w.*, st.km, st.kcal,
                    -- Sparse background readings don't describe a workout: need >= 1 sample
-                   -- per minute of the [start, end] window they were drawn from (pauses too).
-                   COALESCE(st.hr, CASE WHEN hs.n >= w.win_min THEN hs.hr END) hr
+                   -- per minute of the [start, end] window they were drawn from (pauses too),
+                   -- or of the duration if longer (a truncated window must not lower the bar).
+                   -- Multi-arg MAX is NULL if either is: an unknown unit gets no fallback.
+                   COALESCE(st.hr, CASE WHEN hs.n >= MAX(w.win_min, w.dur_min) THEN hs.hr END) hr
             FROM w LEFT JOIN st ON st.workout_key = w.key LEFT JOIN hs ON hs.key = w.key)
         SELECT activity, COUNT(*) n,
                ROUND(SUM(dur_min), 1) total_min,
