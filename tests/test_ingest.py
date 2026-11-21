@@ -4,6 +4,8 @@ Uses a tiny synthetic zip mirroring the real tr_TR export quirks (main XML named
 in Turkish, English type ids, localized sourceName, offset timestamps).
 """
 
+import os
+import stat
 import zipfile
 
 from apple_health_export_mcp.db import connect, init_schema
@@ -62,3 +64,14 @@ def test_ingest_parses_and_is_idempotent(tmp_path):
     assert conn.execute("SELECT COUNT(*) c FROM record").fetchone()["c"] == 3
     assert conn.execute("SELECT COUNT(*) c FROM workout").fetchone()["c"] == 1
     conn.close()
+
+
+def test_ingested_db_is_owner_only(tmp_path):
+    zip_path = tmp_path / "export.zip"
+    db = tmp_path / "data" / "health.db"
+    _make_zip(zip_path)
+
+    ingest(zip_path, db, progress=lambda *_: None)
+
+    assert stat.S_IMODE(os.stat(db).st_mode) == 0o600
+    assert stat.S_IMODE(os.stat(db.parent).st_mode) == 0o700
