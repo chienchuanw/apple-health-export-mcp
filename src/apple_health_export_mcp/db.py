@@ -74,7 +74,7 @@ def _make_private(p: Path) -> None:
     SQLite creates -wal/-shm with the main file's mode, but tighten any stale ones too.
     """
     if not p.parent.exists():
-        p.parent.mkdir(parents=True)
+        p.parent.mkdir(parents=True, exist_ok=True)  # exist_ok: a concurrent ingest may win the race
         os.chmod(p.parent, 0o700)  # explicit: mkdir's mode is filtered by the umask
     os.close(os.open(p, os.O_CREAT | os.O_RDWR, 0o600))
     for f in (p, p.with_name(p.name + "-wal"), p.with_name(p.name + "-shm")):
