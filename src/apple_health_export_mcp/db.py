@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS workout (
 );
 CREATE INDEX IF NOT EXISTS ix_workout_date ON workout(local_date);
 
+-- Per-workout statistics (distance, energy, heart rate…), units kept raw (ADR-0011).
+-- Legacy exports without <WorkoutStatistics> store the Workout's totalDistance /
+-- totalEnergyBurned attributes here under those attribute names as `type`.
+CREATE TABLE IF NOT EXISTS workout_stat (
+    workout_key BLOB NOT NULL,     -- workout.key
+    type        TEXT NOT NULL,     -- HKQuantityTypeIdentifier*, or totalDistance/totalEnergyBurned
+    unit        TEXT,
+    sum         REAL,
+    average     REAL,
+    minimum     REAL,
+    maximum     REAL,
+    start       TEXT,
+    end         TEXT,
+    PRIMARY KEY (workout_key, type)
+);
+
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
