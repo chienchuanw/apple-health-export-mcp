@@ -142,3 +142,20 @@ def test_reingest_with_an_open_reader_still_succeeds(tmp_path, monkeypatch):
     assert held and counts["record"] == 30
     monkeypatch.setenv("AH_DB_PATH", str(db))
     assert len(tools.list_types()) == 4  # still readable, whatever journal mode it ended in
+
+
+def test_wal_file_exists_for_the_whole_ingest(tmp_path):
+    """connect_readonly treats "no -wal" as "no writer"; ingest must create it before parsing."""
+    from fixtures.synthetic import write_export
+
+    zip_path = write_export(tmp_path / "export.zip", 1)
+    db = tmp_path / "health.db"
+    ingest(zip_path, db, progress=lambda *_: None)  # first build ends in DELETE mode: no -wal
+    seen = []
+
+    def progress(msg):
+        if msg.startswith("Reading"):
+            seen.append(db.with_name(db.name + "-wal").exists())
+
+    ingest(zip_path, db, progress=progress)
+    assert seen == [True]
