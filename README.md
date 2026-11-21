@@ -111,6 +111,8 @@ All query tools require a date range and return **aggregates only** — never ra
 aren't inflated (ADR-0010); pass `source` (see `list_sources`) to force one device.
 `get_workouts` normalizes units (mi → km, kJ → kcal, hours/seconds → minutes) and weights the
 average heart rate by workout duration; a field is `null` when the export has no such data (ADR-0011).
+A workout without a heart-rate statistic uses the heart-rate samples recorded during it, if there is
+at least one per minute (ADR-0012).
 
 ## Prompts
 

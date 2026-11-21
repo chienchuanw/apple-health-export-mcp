@@ -1,6 +1,7 @@
 """Workout statistics: parsing WorkoutStatistics (direct, nested, legacy) and unit math. ADR-0011."""
 
 import zipfile
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -232,3 +233,66 @@ def test_distance_units(tmp_path, value, unit):
     conn, *_ = _ingest(tmp_path, _workout(_stat(DIST, unit, sum=value)))
     (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
     assert w.total_distance_km == pytest.approx(5.0, abs=0.01)
+
+
+# --- Heart-rate fallback from HeartRate samples (issue #4) -----------------------
+
+
+def _hr_samples(values, start="2026-06-18 07:00:30", offset="+0300", step_s=60):
+    """HeartRate <Record>s, one every `step_s` seconds from `start` (local time + offset)."""
+    t0 = datetime.strptime(start, "%Y-%m-%d %H:%M:%S")
+    out = []
+    for i, v in enumerate(values):
+        ts = (t0 + timedelta(seconds=i * step_s)).strftime("%Y-%m-%d %H:%M:%S") + f" {offset}"
+        out.append(
+            f'<Record type="{HR}" sourceName="Watch" unit="count/min" value="{v}" startDate="{ts}" endDate="{ts}"/>'
+        )
+    return "".join(out)
+
+
+def _hr(conn, day="2026-06-18"):
+    (w,) = queries.workouts(conn, day, day)
+    return w.avg_heart_rate
+
+
+def test_heart_rate_falls_back_to_dense_samples(tmp_path):
+    """No HR statistic, 30 samples over a 30-min workout (1/min) -> their mean."""
+    conn, *_ = _ingest(tmp_path, _workout(), _hr_samples([140, 160] * 15))
+    assert _hr(conn) == 150.0
+
+
+def test_sparse_samples_leave_heart_rate_null(tmp_path):
+    """29 samples over 30 min is below 1/min: background readings, not a workout trace."""
+    conn, *_ = _ingest(tmp_path, _workout(), _hr_samples([150] * 29))
+    assert _hr(conn) is None
+
+
+def test_heart_rate_statistic_wins_over_samples(tmp_path):
+    body = _stat(HR, "count/min", average="150")
+    conn, *_ = _ingest(tmp_path, _workout(body), _hr_samples([100] * 30))
+    assert _hr(conn) == 150.0
+
+
+def test_samples_outside_the_workout_are_excluded(tmp_path):
+    inside = _hr_samples([150] * 30)
+    before = _hr_samples([60] * 30, start="2026-06-18 06:00:00")
+    after = _hr_samples([60] * 30, start="2026-06-18 07:31:00")
+    conn, *_ = _ingest(tmp_path, _workout(), before, inside, after)
+    assert _hr(conn) == 150.0
+
+
+def test_samples_are_matched_by_instant_not_by_text(tmp_path):
+    """04:00:30 +0000 is inside 07:00-07:30 +0300; 07:00:30 +0000 (10:00:30 +0300) is not."""
+    same_instant = _hr_samples([150] * 30, start="2026-06-18 04:00:30", offset="+0000")
+    same_text = _hr_samples([60] * 30, start="2026-06-18 07:00:30", offset="+0000")
+    conn, *_ = _ingest(tmp_path, _workout(), same_instant, same_text)
+    assert _hr(conn) == 150.0
+
+
+def test_samples_on_both_sides_of_midnight_are_used(tmp_path):
+    late, early = "2026-06-18 23:45:00 +0300", "2026-06-19 00:15:00 +0300"
+    samples = _hr_samples([140] * 15, start="2026-06-18 23:45:30") + _hr_samples(
+        [160] * 15, start="2026-06-19 00:00:30"
+    )
+    conn, *_ = _ingest(tmp_path, _workout(start=late, end=early), samples)
+    assert _hr(conn) == 150.0
