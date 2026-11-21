@@ -27,9 +27,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    shutdown — see [Shutdown & process model](#shutdown--process-model).
 
    ```bash
-   uv tool install apple-health-export-mcp
-   # …or from source:
-   uv tool install git+https://github.com/burakdirin/apple-health-export-mcp
+   uv tool install git+https://github.com/chienchuanw/apple-health-export-mcp@v0.2.0
+   # PyPI (`uv tool install apple-health-export-mcp`) has 0.1.1, without the 0.2.0
+   # changes (workout statistics, read-only server, private DB file).
    ```
 
    This puts two commands on your PATH: `apple-health-export-mcp` (the server) and
