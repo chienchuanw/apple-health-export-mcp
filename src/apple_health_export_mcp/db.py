@@ -50,10 +50,26 @@ def db_path() -> Path:
     return Path(base) / "apple-health-export-mcp" / "health.db"
 
 
+def _make_private(p: Path) -> None:
+    """Create the DB file owner-only (0600) and tighten an existing one.
+
+    Health data must not be world-readable. Only the directory we create is set to
+    0700 — a pre-existing parent (e.g. ~/Documents via AH_DB_PATH) is left alone.
+    SQLite creates -wal/-shm with the main file's mode, but tighten any stale ones too.
+    """
+    if not p.parent.exists():
+        p.parent.mkdir(parents=True)
+        os.chmod(p.parent, 0o700)  # explicit: mkdir's mode is filtered by the umask
+    os.close(os.open(p, os.O_CREAT | os.O_RDWR, 0o600))
+    for f in (p, p.with_name(p.name + "-wal"), p.with_name(p.name + "-shm")):
+        if f.exists():
+            os.chmod(f, 0o600)
+
+
 def connect(path: Path | None = None, *, create: bool = True) -> sqlite3.Connection:
     p = path or db_path()
     if create:
-        p.parent.mkdir(parents=True, exist_ok=True)
+        _make_private(p)
     elif not p.exists():
         raise FileNotFoundError(
             f"No database at {p}. Run `apple-health-export-mcp ingest <export.zip>` first "
