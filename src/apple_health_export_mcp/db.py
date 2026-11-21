@@ -114,12 +114,14 @@ def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(f"{uri}?mode=ro", uri=True)
     try:
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as e:
         # A WAL-mode DB (e.g. built by 0.1.1) whose -wal/-shm are gone — deleted on
-        # close, or the file was copied alone. A mode=ro reader can't recreate them.
-        # No WAL file means no writer and nothing un-checkpointed, so immutable is safe.
+        # close, or the file was copied alone: a mode=ro reader can't recreate them
+        # (SQLITE_CANTOPEN). No WAL file means no writer and nothing un-checkpointed,
+        # so immutable is safe. Anything else — a lock, a hot journal left by a
+        # crashed writer — must raise: immutable would read uncommitted pages.
         conn.close()
-        if p.with_name(p.name + "-wal").exists():
+        if e.sqlite_errorcode != sqlite3.SQLITE_CANTOPEN or p.with_name(p.name + "-wal").exists():
             raise
         conn = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row

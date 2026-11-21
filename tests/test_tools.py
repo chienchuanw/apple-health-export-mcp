@@ -7,6 +7,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from apple_health_export_mcp import tools
+from apple_health_export_mcp.db import connect_readonly
 from apple_health_export_mcp.ingest import ingest
 
 XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -79,3 +80,65 @@ def test_database_errors_surface_as_tool_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("AH_DB_PATH", str(empty))
     with pytest.raises(ToolError, match="no such table"):
         tools.list_types()
+
+
+_CRASHING_WRITER = r"""
+import os, sqlite3, sys
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("PRAGMA cache_size=1")  # force uncommitted pages to spill into the DB file
+c.execute("PRAGMA cache_spill=1")
+c.execute("BEGIN EXCLUSIVE")
+c.execute("UPDATE t SET v = 'DIRTY' || substr(v, 6)")
+c.executemany("INSERT INTO t(v) VALUES (?)", [("x" * 500,)] * 20000)
+os._exit(0)  # crash mid-transaction: leaves a hot rollback journal
+"""
+
+
+def test_crashed_writer_is_never_read_as_committed_data(tmp_path):
+    """A hot journal must surface as an error, not be bypassed by the immutable fallback."""
+    import subprocess
+    import sys
+
+    db = tmp_path / "health.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)")
+    conn.executemany("INSERT INTO t(v) VALUES (?)", [("clean" + "y" * 400,)] * 2000)
+    conn.commit()
+    conn.close()
+    subprocess.run([sys.executable, "-c", _CRASHING_WRITER, str(db)], check=True)
+    assert db.with_name(db.name + "-journal").exists()
+
+    try:
+        conn = connect_readonly(db)
+        dirty = conn.execute("SELECT COUNT(*) FROM t WHERE v LIKE 'DIRTY%'").fetchone()[0]
+        conn.close()
+    except sqlite3.OperationalError:
+        return  # refusing to read is correct
+    assert dirty == 0, "read uncommitted pages from a crashed transaction"
+
+
+def test_reingest_with_an_open_reader_still_succeeds(tmp_path, monkeypatch):
+    """A server connection opened mid-ingest (WAL active) must not fail a committed ingest."""
+    from fixtures.synthetic import write_export
+
+    from apple_health_export_mcp import ingest as ingest_mod
+
+    zip_path = write_export(tmp_path / "export.zip", 3)
+    db = tmp_path / "health.db"
+    ingest(zip_path, db, progress=lambda *_: None)
+    monkeypatch.setattr(ingest_mod, "BATCH", 5)  # commit early so a reader can join mid-ingest
+    held = []
+
+    def progress(msg):
+        if "records" in msg and not held:
+            held.append(connect_readonly(db))
+            held[0].execute("SELECT COUNT(*) FROM record").fetchall()
+
+    try:
+        counts = ingest(zip_path, db, progress=progress)
+    finally:
+        for c in held:
+            c.close()
+    assert held and counts["record"] == 30
+    monkeypatch.setenv("AH_DB_PATH", str(db))
+    assert len(tools.list_types()) == 4  # still readable, whatever journal mode it ended in
