@@ -43,7 +43,21 @@ _STAT_FIELDS = ("sum", "average", "minimum", "maximum")
 
 
 def _num(v: str | None) -> float | None:
-    return float(v) if v else None
+    """Parse a numeric attribute; a missing or malformed value is None, never an abort."""
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+
+
+_TS = "%Y-%m-%d %H:%M:%S %z"
+
+
+def _when(ts: str | None) -> datetime | None:
+    try:
+        return datetime.strptime(ts, _TS) if ts else None
+    except ValueError:
+        return None
 
 
 def _stat(el) -> dict:
@@ -57,11 +71,18 @@ def _stat(el) -> dict:
 
 
 def _minutes(st: dict) -> float | None:
-    try:
-        fmt = "%Y-%m-%d %H:%M:%S %z"
-        return (datetime.strptime(st["end"], fmt) - datetime.strptime(st["start"], fmt)).total_seconds() / 60
-    except (TypeError, ValueError):
+    start, end = _when(st["start"]), _when(st["end"])
+    return (end - start).total_seconds() / 60 if start and end else None
+
+
+def _span(stamps: list[str], pick) -> str | None:
+    """Earliest/latest timestamp by actual time (offsets may differ), else by text."""
+    if not stamps:
         return None
+    parsed = [_when(t) for t in stamps]
+    if all(parsed):
+        return stamps[parsed.index(pick(parsed))]
+    return pick(stamps)
 
 
 def _merge(parts: list[dict]) -> dict:
@@ -82,15 +103,17 @@ def _merge(parts: list[dict]) -> dict:
         average = sum(a * m for a, m in avgs) / sum(m for _, m in avgs)
     else:
         average = sum(a for a, _ in avgs) / len(avgs) if avgs else None
-    sums, starts, ends = vals("sum"), vals("start"), vals("end")
+    sums = vals("sum")
+    units = {p["unit"] for p in parts}
     return {
-        "unit": parts[0]["unit"],  # ponytail: segments of one workout share a unit in practice
+        # Mixed units can't be added raw; NULL normalizes to a NULL total (ADR-0011).
+        "unit": units.pop() if len(units) == 1 else None,
         "sum": sum(sums) if sums else None,
         "average": average,
         "minimum": min(vals("minimum"), default=None),
         "maximum": max(vals("maximum"), default=None),
-        "start": min(starts) if starts else None,
-        "end": max(ends) if ends else None,
+        "start": _span(vals("start"), min),
+        "end": _span(vals("end"), max),
     }
 
 
@@ -109,10 +132,11 @@ def _workout_stats(elem, key: bytes) -> list[tuple]:
         stats[ws.get("type", "")] = _stat(ws)
 
     a = elem.attrib
-    if a.get("totalDistance") and not any(t.startswith("HKQuantityTypeIdentifierDistance") for t in stats):
-        stats["totalDistance"] = {"unit": a.get("totalDistanceUnit"), "sum": float(a["totalDistance"])}
-    if a.get("totalEnergyBurned") and "HKQuantityTypeIdentifierActiveEnergyBurned" not in stats:
-        stats["totalEnergyBurned"] = {"unit": a.get("totalEnergyBurnedUnit"), "sum": float(a["totalEnergyBurned"])}
+    dist, energy = _num(a.get("totalDistance")), _num(a.get("totalEnergyBurned"))
+    if dist is not None and not any(t.startswith("HKQuantityTypeIdentifierDistance") for t in stats):
+        stats["totalDistance"] = {"unit": a.get("totalDistanceUnit"), "sum": dist}
+    if energy is not None and "HKQuantityTypeIdentifierActiveEnergyBurned" not in stats:
+        stats["totalEnergyBurned"] = {"unit": a.get("totalEnergyBurnedUnit"), "sum": energy}
 
     start, end = a.get("startDate"), a.get("endDate")
     return [
@@ -148,7 +172,7 @@ def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
             row = (
                 key,
                 a.get("workoutActivityType", ""),
-                float(a["duration"]) if a.get("duration") else None,
+                _num(a.get("duration")),
                 a.get("durationUnit"),
                 a.get("sourceName"),
                 start,
