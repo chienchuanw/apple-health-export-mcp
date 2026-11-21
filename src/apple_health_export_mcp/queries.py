@@ -217,6 +217,11 @@ def _factor(col: str, table: dict[str, float]) -> str:
     return f"(CASE {col} {whens} END)"
 
 
+# Stand-in for workout_stat on a DB built before it existed (0.1.1): the read-only
+# server can't create the table, so stats read as NULL until the user re-ingests.
+_NO_STATS = "(SELECT NULL workout_key, NULL type, NULL unit, NULL sum, NULL average WHERE 0)"
+
+
 def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSummary]:
     """Per-activity workout summary in range: count, minutes, distance, energy, heart rate.
 
@@ -225,6 +230,8 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
     legacy totalDistance attribute) in km; energy is active energy in kcal. Average
     heart rate is weighted by workout duration over workouts that have one.
     """
+    has_stats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workout_stat'").fetchone()
+    stats = "workout_stat" if has_stats else _NO_STATS
     rows = conn.execute(
         f"""
         WITH w AS (
@@ -238,7 +245,7 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
                    SUM(CASE WHEN type IN ('HKQuantityTypeIdentifierActiveEnergyBurned', 'totalEnergyBurned')
                             THEN sum * {_factor("unit", _TO_KCAL)} END) kcal,
                    MAX(CASE WHEN type = 'HKQuantityTypeIdentifierHeartRate' THEN average END) hr
-            FROM workout_stat WHERE workout_key IN (SELECT key FROM w)
+            FROM {stats} WHERE workout_key IN (SELECT key FROM w)
             GROUP BY workout_key)
         SELECT activity, COUNT(*) n,
                ROUND(SUM(dur_min), 1) total_min,
