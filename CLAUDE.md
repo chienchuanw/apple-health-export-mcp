@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A FastMCP (v3+, `>=3.4.10,<5`) stdio MCP server that answers questions about a user's **exported** Apple Health archive. Apple has no live API, so the flow is two-stage and snapshot-based:
+A FastMCP (v3, `>=3.4.10,<4`) stdio MCP server that answers questions about a user's **exported** Apple Health archive. Apple has no live API, so the flow is two-stage and snapshot-based:
 
 ```
 export.zip ──(ingest CLI, one-time)──► SQLite (health.db) ──◄── MCP server tools query it
