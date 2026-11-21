@@ -216,6 +216,10 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     # Keys are content hashes (random order), so inserts hit B-tree pages all over;
     # a 32 MB page cache (default 2 MB) cuts ingest time ~15% at no peak-RSS cost.
     conn.execute("PRAGMA cache_size=-32768")
+    # Commit right away so the -wal file exists for the whole ingest: connect_readonly
+    # reads "no -wal" as "no writer" and may then open the DB immutable.
+    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
+    conn.commit()
 
     counts = dict.fromkeys(_SQL, 0)
     batches: dict[str, list[tuple]] = {k: [] for k in _SQL}
@@ -239,8 +243,6 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
-    conn.commit()
     # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
     # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
     # with a server connection attached the switch is refused ("database is locked"),
