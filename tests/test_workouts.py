@@ -358,3 +358,9 @@ def test_fallback_on_a_database_built_before_workout_stat(tmp_path):
     conn.execute("DROP TABLE workout_stat")
     conn.commit()
     assert _hr(conn) == 150.0
+
+
+def test_window_shorter_than_duration_does_not_lower_the_bar(tmp_path):
+    """start == end (window 0) with a 30-min duration: one sample must not set the HR."""
+    conn, *_ = _ingest(tmp_path, _workout(end=T0), _hr_samples([200], start="2026-06-18 07:00:00"))
+    assert _hr(conn) is None
