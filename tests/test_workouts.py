@@ -181,3 +181,54 @@ def test_legacy_and_new_exports_of_one_workout_do_not_double_count(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM workout").fetchone()[0] == 1
     (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
     assert (w.total_distance_km, w.total_energy_kcal) == (5.0, 300.0)
+
+
+def _two_segments(a, b, s0=T0, s1=T1, mid="2026-06-18 07:10:00 +0300", mid_b=None):
+    return (
+        f'<WorkoutActivity uuid="A" startDate="{s0}" endDate="{mid}">{a}</WorkoutActivity>'
+        f'<WorkoutActivity uuid="B" startDate="{mid_b or mid}" endDate="{s1}">{b}</WorkoutActivity>'
+    )
+
+
+def test_merged_segments_with_mixed_units_yield_null_not_a_wrong_sum(tmp_path):
+    body = _two_segments(_stat(DIST, "km", sum="2"), _stat(DIST, "m", sum="3000"))
+    conn, *_ = _ingest(tmp_path, _workout(body))
+    assert _stats(conn)[DIST][0] is None  # unit unknown -> normalizes to NULL (ADR-0011)
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert w.total_distance_km is None
+
+
+def test_merged_span_is_ordered_by_time_not_by_string(tmp_path):
+    """07:00 +0300 is earlier than 05:30 +0100 (= 07:30 +0300), though it sorts later as text."""
+    early, late_other_tz = "2026-06-18 07:00:00 +0300", "2026-06-18 05:30:00 +0100"
+    a = _stat(DIST, "km", start=early, end="2026-06-18 07:10:00 +0300", sum="2")
+    b = _stat(DIST, "km", start=late_other_tz, end=T1, sum="3")
+    conn, *_ = _ingest(tmp_path, _workout(_two_segments(a, b)))
+    row = conn.execute("SELECT start, end FROM workout_stat").fetchone()
+    assert (row["start"], row["end"]) == (early, T1)
+
+
+def test_malformed_numbers_do_not_abort_ingest(tmp_path):
+    bad = _workout(duration="n/a", extra='totalDistance="abc" totalDistanceUnit="km"')
+    good = _workout(_stat(DIST, "km", sum="oops") + _stat(ENERGY, "kcal", sum="300"), start=T1, end=T1)
+    conn, counts, *_ = _ingest(tmp_path, bad, good)
+    assert counts["workout"] == 2
+    assert conn.execute("SELECT COUNT(*) FROM workout_stat WHERE type='totalDistance'").fetchone()[0] == 0
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert w.total_energy_kcal == 300.0
+
+
+@pytest.mark.parametrize(
+    ("duration", "unit", "minutes"), [("0.5", "d", 720.0), ("1800000", "ms", 30.0), ("1.5", "hr", 90.0)]
+)
+def test_duration_units(tmp_path, duration, unit, minutes):
+    conn, *_ = _ingest(tmp_path, _workout(duration=duration, unit=unit))
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert w.total_min == minutes
+
+
+@pytest.mark.parametrize(("value", "unit"), [("5", "km"), ("5000", "m"), ("500000", "cm"), ("16404.2", "ft")])
+def test_distance_units(tmp_path, value, unit):
+    conn, *_ = _ingest(tmp_path, _workout(_stat(DIST, unit, sum=value)))
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert w.total_distance_km == pytest.approx(5.0, abs=0.01)
