@@ -206,8 +206,8 @@ def sleep(conn: sqlite3.Connection, start: str, end: str) -> list[SleepNight]:
 
 # Unit -> factor to the canonical unit (ADR-0011). An unknown unit maps to NULL, so it
 # drops out of the total instead of silently producing a wrong number.
-_TO_MIN = {"min": 1.0, "hr": 60.0, "h": 60.0, "s": 1 / 60}
-_TO_KM = {"km": 1.0, "m": 0.001, "mi": 1.609344, "yd": 0.0009144}
+_TO_MIN = {"min": 1.0, "hr": 60.0, "h": 60.0, "d": 1440.0, "s": 1 / 60, "ms": 1 / 60000}
+_TO_KM = {"km": 1.0, "m": 0.001, "cm": 0.00001, "mi": 1.609344, "yd": 0.0009144, "ft": 0.0003048}
 _TO_KCAL = {"kcal": 1.0, "Cal": 1.0, "cal": 0.001, "kJ": 1 / 4.184, "J": 1 / 4184}
 
 
