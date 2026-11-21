@@ -10,6 +10,7 @@ An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant query
 Apple has no live export API, so this works on a **snapshot**: you export your health archive once, ingest it into a local SQLite database, then the server answers queries against it. See [`docs/adr.md`](docs/adr.md) for why.
 
 > **Privacy:** your health data never leaves your machine and is never committed to git (`.gitignore` excludes `*.zip` / `*.db`).
+> The database is created owner-only (`0600`, its new directory `0700`), and the MCP server opens it **read-only**.
 
 ## How it works
 
@@ -26,9 +27,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    shutdown — see [Shutdown & process model](#shutdown--process-model).
 
    ```bash
-   uv tool install apple-health-export-mcp
-   # …or from source:
-   uv tool install git+https://github.com/burakdirin/apple-health-export-mcp
+   uv tool install git+https://github.com/chienchuanw/apple-health-export-mcp@v0.2.0
+   # PyPI (`uv tool install apple-health-export-mcp`) has 0.1.1, without the 0.2.0
+   # changes (workout statistics, read-only server, private DB file).
    ```
 
    This puts two commands on your PATH: `apple-health-export-mcp` (the server) and
@@ -40,6 +41,10 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    AH_DB_PATH=~/.local/share/apple-health-export-mcp/health.db \
      apple-health-export-mcp-ingest ~/Downloads/export.zip
    ```
+
+   Re-ingesting is idempotent, so it is also how an existing database picks up
+   newly supported data (e.g. workout distance / energy / heart rate) — run it
+   again on the same or a newer `export.zip`.
 
 4. **Add to your MCP client** (e.g. Claude Code `.mcp.json`). The bare command
    starts the stdio server; point it at the DB you just built.
@@ -99,11 +104,17 @@ and the most reliable cleanup. `fastmcp run fastmcp.json` is for local dev only.
 | `list_sources(type)`                                  | Which devices/apps wrote a metric (counts, date spans)                      |
 | `get_quantity(type, start, end, agg, bucket, source)` | Per day/week/month/all aggregate for a numeric metric (steps, HR, weight…)  |
 | `get_sleep(start, end)`                               | Per-night sleep stage durations                                             |
-| `get_workouts(start, end)`                            | Workout summary per activity type in the range                              |
+| `get_workouts(start, end)`                            | Per activity: count, minutes (total/avg/max), km, active kcal, avg HR       |
 
 All query tools require a date range and return **aggregates only** — never raw rows (ADR-0008).
 `get_quantity` with `agg="sum"` auto-deduplicates parallel devices (Watch + iPhone + apps) so totals
 aren't inflated (ADR-0010); pass `source` (see `list_sources`) to force one device.
+`get_workouts` normalizes units (mi → km, kJ → kcal, hours/seconds → minutes) and weights the
+average heart rate by workout duration; a field is `null` when the export has no such data (ADR-0011).
+A workout without a heart-rate statistic uses the heart-rate samples recorded during it, if there is
+at least one per minute of its start-to-end window (ADR-0012).
+`max_min` is the longest single workout: one far above `avg_min` usually means a session was left
+running, so it is surfaced rather than silently excluded.
 
 ## Prompts
 
@@ -126,6 +137,15 @@ Arguments are optional — they default to today / this week / this month / this
 uv sync
 uv run pytest
 uv run ruff check
+uv run ruff format --check
+```
+
+`tests/fixtures/synthetic.py` generates a synthetic export with known ground truth
+(used by the tests). For a manual ingest benchmark, write a large one and time it:
+
+```bash
+uv run python tests/fixtures/synthetic.py /tmp/big.zip 150000   # ~0.8 GB of XML
+/usr/bin/time -l apple-health-export-mcp-ingest /tmp/big.zip --db /tmp/big.db
 ```
 
 ## License

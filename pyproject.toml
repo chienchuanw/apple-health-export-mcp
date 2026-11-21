@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=3.4",
+    "fastmcp>=3.4.10,<4",
 ]
 
 [project.scripts]
@@ -45,6 +45,20 @@ path = "src/apple_health_export_mcp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/apple_health_export_mcp"]
+
+# Allowlist, not the default "everything not gitignored": a local build must never
+# pick up untracked files (notes, session logs, health exports) from the checkout.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/pyproject.toml",
+]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

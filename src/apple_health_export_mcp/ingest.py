@@ -10,8 +10,11 @@ Validated against a real tr_TR export (HealthKit Export Version 14, ~2.4M record
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import zipfile
 from collections.abc import Iterator
+from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -38,8 +41,114 @@ def _key(*parts: str | None) -> bytes:
     return hashlib.blake2b("|".join(p or "" for p in parts).encode(), digest_size=16).digest()
 
 
+_STAT_FIELDS = ("sum", "average", "minimum", "maximum")
+
+
+def _num(v: str | None) -> float | None:
+    """Parse a numeric attribute; a missing or malformed value is None, never an abort."""
+    try:
+        return float(v) if v else None
+    except ValueError:
+        return None
+
+
+_TS = "%Y-%m-%d %H:%M:%S %z"
+
+
+def _when(ts: str | None) -> datetime | None:
+    try:
+        return datetime.strptime(ts, _TS) if ts else None
+    except ValueError:
+        return None
+
+
+def _stat(el) -> dict:
+    """One <WorkoutStatistics> element as a dict (values as floats, unit raw)."""
+    return {
+        "unit": el.get("unit"),
+        **{k: _num(el.get(k)) for k in _STAT_FIELDS},
+        "start": el.get("startDate"),
+        "end": el.get("endDate"),
+    }
+
+
+def _minutes(st: dict) -> float | None:
+    start, end = _when(st["start"]), _when(st["end"])
+    return (end - start).total_seconds() / 60 if start and end else None
+
+
+def _span(stamps: list[str], pick) -> str | None:
+    """Earliest/latest timestamp by actual time (offsets may differ), else by text."""
+    if not stamps:
+        return None
+    parsed = [_when(t) for t in stamps]
+    if all(parsed):
+        return stamps[parsed.index(pick(parsed))]
+    return pick(stamps)
+
+
+def _merge(parts: list[dict]) -> dict:
+    """Combine one type's statistics from several <WorkoutActivity> segments.
+
+    Totals add, extremes take min/max, the average is weighted by segment time
+    (plain mean if a segment's time is unknown). Only used when the Workout has no
+    direct, whole-workout statistic for that type.
+    """
+    if len(parts) == 1:
+        return parts[0]
+
+    def vals(k):
+        return [p[k] for p in parts if p[k] is not None]
+
+    avgs = [(p["average"], _minutes(p)) for p in parts if p["average"] is not None]
+    if avgs and all(m for _, m in avgs):
+        average = sum(a * m for a, m in avgs) / sum(m for _, m in avgs)
+    else:
+        average = sum(a for a, _ in avgs) / len(avgs) if avgs else None
+    sums = vals("sum")
+    units = {p["unit"] for p in parts}
+    return {
+        # Mixed units can't be added raw; NULL normalizes to a NULL total (ADR-0011).
+        "unit": units.pop() if len(units) == 1 else None,
+        "sum": sum(sums) if sums else None,
+        "average": average,
+        "minimum": min(vals("minimum"), default=None),
+        "maximum": max(vals("maximum"), default=None),
+        "start": _span(vals("start"), min),
+        "end": _span(vals("end"), max),
+    }
+
+
+def _workout_stats(elem, key: bytes) -> list[tuple]:
+    """Statistics rows for one <Workout>; must run before elem.clear(). ADR-0011.
+
+    Direct <WorkoutStatistics> children are whole-workout values and win over the
+    per-segment ones nested in <WorkoutActivity> (iOS 16+). Older exports have no
+    statistics, only totalDistance/totalEnergyBurned attributes — used as a fallback.
+    """
+    nested: dict[str, list[dict]] = {}
+    for ws in elem.iterfind("WorkoutActivity/WorkoutStatistics"):
+        nested.setdefault(ws.get("type", ""), []).append(_stat(ws))
+    stats = {t: _merge(parts) for t, parts in nested.items()}
+    for ws in elem.iterfind("WorkoutStatistics"):
+        stats[ws.get("type", "")] = _stat(ws)
+
+    a = elem.attrib
+    dist, energy = _num(a.get("totalDistance")), _num(a.get("totalEnergyBurned"))
+    if dist is not None and not any(t.startswith("HKQuantityTypeIdentifierDistance") for t in stats):
+        stats["totalDistance"] = {"unit": a.get("totalDistanceUnit"), "sum": dist}
+    if energy is not None and "HKQuantityTypeIdentifierActiveEnergyBurned" not in stats:
+        stats["totalEnergyBurned"] = {"unit": a.get("totalEnergyBurnedUnit"), "sum": energy}
+
+    start, end = a.get("startDate"), a.get("endDate")
+    return [
+        (key, t, st["unit"], *(st.get(k) for k in _STAT_FIELDS), st.get("start") or start, st.get("end") or end)
+        for t, st in stats.items()
+    ]
+
+
 def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
-    """Yield ('record'|'workout', row_tuple) for each relevant element, freeing memory."""
+    """Yield ('record'|'workout'|'workout_stat', row_tuple) per relevant element, freeing memory."""
     for _event, elem in ET.iterparse(stream, events=("end",)):
         tag = elem.tag
         if tag == "Record":
@@ -61,10 +170,11 @@ def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
         elif tag == "Workout":
             a = elem.attrib
             start = a.get("startDate", "")
+            key = _key(a.get("workoutActivityType"), a.get("sourceName"), start, a.get("endDate"), a.get("duration"))
             row = (
-                _key(a.get("workoutActivityType"), a.get("sourceName"), start, a.get("endDate"), a.get("duration")),
+                key,
                 a.get("workoutActivityType", ""),
-                float(a["duration"]) if a.get("duration") else None,
+                _num(a.get("duration")),
                 a.get("durationUnit"),
                 a.get("sourceName"),
                 start,
@@ -73,6 +183,8 @@ def _iter_rows(stream) -> Iterator[tuple[str, tuple]]:
                 start[:10],
             )
             yield "workout", row
+            for stat_row in _workout_stats(elem, key):
+                yield "workout_stat", stat_row
             elem.clear()
         elif tag in ("Correlation", "ActivitySummary", "Me", "ExportDate"):
             elem.clear()  # not stored in v1; free memory
@@ -86,6 +198,12 @@ _WK_SQL = (
     "(key,activity,duration,duration_unit,source,start,end,created,local_date)"
     " VALUES (?,?,?,?,?,?,?,?,?)"
 )
+_STAT_SQL = (
+    "INSERT OR IGNORE INTO workout_stat"
+    "(workout_key,type,unit,sum,average,minimum,maximum,start,end)"
+    " VALUES (?,?,?,?,?,?,?,?,?)"
+)
+_SQL = {"record": _REC_SQL, "workout": _WK_SQL, "workout_stat": _STAT_SQL}
 
 
 def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[str, int]:
@@ -95,18 +213,22 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     # Ingest-only speedups; safe because it's a rebuildable derived store. ADR-0003.
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=OFF")
+    # Keys are content hashes (random order), so inserts hit B-tree pages all over;
+    # a 32 MB page cache (default 2 MB) cuts ingest time ~15% at no peak-RSS cost.
+    conn.execute("PRAGMA cache_size=-32768")
+    # Commit right away so the -wal file exists for the whole ingest: connect_readonly
+    # reads "no -wal" as "no writer" and may then open the DB immutable.
+    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
+    conn.commit()
 
-    counts = {"record": 0, "workout": 0}
-    rec_batch: list[tuple] = []
-    wk_batch: list[tuple] = []
+    counts = dict.fromkeys(_SQL, 0)
+    batches: dict[str, list[tuple]] = {k: [] for k in _SQL}
 
     def flush() -> None:
-        if rec_batch:
-            conn.executemany(_REC_SQL, rec_batch)
-            rec_batch.clear()
-        if wk_batch:
-            conn.executemany(_WK_SQL, wk_batch)
-            wk_batch.clear()
+        for kind, rows in batches.items():
+            if rows:
+                conn.executemany(_SQL[kind], rows)
+                rows.clear()
         conn.commit()
 
     with zipfile.ZipFile(zip_path) as zf:
@@ -114,17 +236,18 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
         progress(f"Reading {main} ...")
         with zf.open(main) as stream:
             for kind, row in _iter_rows(stream):
-                if kind == "record":
-                    rec_batch.append(row)
-                else:
-                    wk_batch.append(row)
+                batches[kind].append(row)
                 counts[kind] += 1
-                if (counts["record"] + counts["workout"]) % BATCH == 0:
+                if kind != "workout_stat" and (counts["record"] + counts["workout"]) % BATCH == 0:
                     flush()
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
-    conn.commit()
+    # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
+    # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
+    # with a server connection attached the switch is refused ("database is locked"),
+    # but every row is already committed and connect_readonly copes with a WAL DB.
+    with suppress(sqlite3.OperationalError):
+        conn.execute("PRAGMA journal_mode=DELETE")
     conn.close()
     return counts

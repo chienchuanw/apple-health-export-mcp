@@ -36,6 +36,22 @@ CREATE TABLE IF NOT EXISTS workout (
 );
 CREATE INDEX IF NOT EXISTS ix_workout_date ON workout(local_date);
 
+-- Per-workout statistics (distance, energy, heart rate…), units kept raw (ADR-0011).
+-- Legacy exports without <WorkoutStatistics> store the Workout's totalDistance /
+-- totalEnergyBurned attributes here under those attribute names as `type`.
+CREATE TABLE IF NOT EXISTS workout_stat (
+    workout_key BLOB NOT NULL,     -- workout.key
+    type        TEXT NOT NULL,     -- HKQuantityTypeIdentifier*, or totalDistance/totalEnergyBurned
+    unit        TEXT,
+    sum         REAL,
+    average     REAL,
+    minimum     REAL,
+    maximum     REAL,
+    start       TEXT,
+    end         TEXT,
+    PRIMARY KEY (workout_key, type)
+);
+
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -50,16 +66,64 @@ def db_path() -> Path:
     return Path(base) / "apple-health-export-mcp" / "health.db"
 
 
-def connect(path: Path | None = None, *, create: bool = True) -> sqlite3.Connection:
-    p = path or db_path()
-    if create:
-        p.parent.mkdir(parents=True, exist_ok=True)
-    elif not p.exists():
+def _make_private(p: Path) -> None:
+    """Create the DB file owner-only (0600) and tighten an existing one.
+
+    Health data must not be world-readable. Only the directory we create is set to
+    0700 — a pre-existing parent (e.g. ~/Documents via AH_DB_PATH) is left alone.
+    SQLite creates -wal/-shm with the main file's mode, but tighten any stale ones too.
+    """
+    if not p.parent.exists():
+        p.parent.mkdir(parents=True, exist_ok=True)  # exist_ok: a concurrent ingest may win the race
+        os.chmod(p.parent, 0o700)  # explicit: mkdir's mode is filtered by the umask
+    os.close(os.open(p, os.O_CREAT | os.O_RDWR, 0o600))
+    for f in (p, p.with_name(p.name + "-wal"), p.with_name(p.name + "-shm")):
+        if f.exists():
+            os.chmod(f, 0o600)
+
+
+def _require(p: Path) -> None:
+    if not p.exists():
         raise FileNotFoundError(
-            f"No database at {p}. Run `apple-health-export-mcp ingest <export.zip>` first "
+            f"No database at {p}. Run `apple-health-export-mcp-ingest <export.zip>` first "
             f"(set AH_DB_PATH to control the location)."
         )
+
+
+def connect(path: Path | None = None, *, create: bool = True) -> sqlite3.Connection:
+    """Read-write connection — for ingest. The server uses `connect_readonly`."""
+    p = path or db_path()
+    if create:
+        _make_private(p)
+    else:
+        _require(p)
     conn = sqlite3.connect(p)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
+    """Read-only connection (SQLite `mode=ro`) — every MCP tool goes through this.
+
+    The URI is built by pathlib (`as_uri()` percent-encodes spaces, `#`, `?`, `%`),
+    so an arbitrary DB path cannot inject extra URI parameters.
+    """
+    p = (path or db_path()).resolve()
+    _require(p)
+    uri = p.as_uri()
+    conn = sqlite3.connect(f"{uri}?mode=ro", uri=True)
+    try:
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+    except sqlite3.OperationalError as e:
+        # A WAL-mode DB (e.g. built by 0.1.1) whose -wal/-shm are gone — deleted on
+        # close, or the file was copied alone: a mode=ro reader can't recreate them
+        # (SQLITE_CANTOPEN). No WAL file means no writer and nothing un-checkpointed,
+        # so immutable is safe. Anything else — a lock, a hot journal left by a
+        # crashed writer — must raise: immutable would read uncommitted pages.
+        conn.close()
+        if e.sqlite_errorcode != sqlite3.SQLITE_CANTOPEN or p.with_name(p.name + "-wal").exists():
+            raise
+        conn = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 

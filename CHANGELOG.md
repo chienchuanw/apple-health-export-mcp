@@ -6,6 +6,50 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
+### Added
+- `get_workouts` now also returns `total_distance_km`, `total_energy_kcal` and a
+  duration-weighted `avg_heart_rate`, parsed from `<WorkoutStatistics>` (direct or
+  nested in `<WorkoutActivity>`) with a fallback to the legacy `totalDistance` /
+  `totalEnergyBurned` attributes. Stored in a new `workout_stat` table; re-run ingest
+  to populate it for an existing database (ADR-0011).
+- A workout without a heart-rate statistic takes `avg_heart_rate` from the
+  `HeartRate` samples recorded during it, when there is at least one per minute
+  of its start-to-end window (ADR-0012). Applies to existing databases without
+  re-ingest.
+- `get_workouts` reports `max_min`, the longest single workout per activity, so a
+  session left running is visible instead of hiding in `total_min` / `avg_min`.
+- Synthetic export fixture with known ground truth (`tests/fixtures/synthetic.py`)
+  and end-to-end tests for dedupe, sleep, workouts and idempotent re-ingest.
+
+### Changed
+- Dependency bound tightened to `fastmcp>=3.4.10,<4` (stay on the 3.x major); lockfile refreshed.
+- CI actions are pinned to full commit SHAs; CI runs with `contents: read` and does
+  not persist the checkout token.
+- Ingest still uses WAL for speed but leaves the database as a single file
+  (`journal_mode=DELETE`), and its summary reports the workout statistics count.
+- A malformed numeric attribute is stored as null instead of aborting the ingest.
+
+### Fixed
+- `get_workouts` `total_min` / `avg_min` honor `durationUnit` (hours and seconds were
+  summed as minutes). Applies to existing databases without re-ingest.
+- Coaching prompts named metrics by short names (`StepCount`, `RestingHeartRate`…),
+  which `get_quantity` never matches; they now use full `HKQuantityTypeIdentifier…` ids.
+- The missing-database hint named `apple-health-export-mcp ingest` instead of the real
+  `apple-health-export-mcp-ingest` command.
+- Database errors raised while a tool runs surface as a clean tool error.
+
+### Security
+- The health database (and its `-wal` / `-shm` files) is created owner-only (`0600`),
+  a directory it creates is `0700`, and an existing database is tightened on ingest.
+- The MCP server opens the database read-only (SQLite `mode=ro` via a
+  percent-encoded `file:` URI); only ingest writes. A 0.1.1-built database (left in
+  WAL mode) stays readable even when its `-wal`/`-shm` files are gone, and
+  `get_workouts` works on it before re-ingest (statistics read as null until then).
+- The sdist is built from an explicit allowlist, so a local `uv build` can no longer
+  pick up untracked files (notes, session logs, health exports) from the checkout.
+
 ## [0.1.1] - 2026-06-30
 
 ### Changed
@@ -32,6 +76,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Coaching prompts: `daily_summary`, `weekly_review`, `monthly_summary`,
   `yearly_summary`, `readiness_check`, `sleep_report`.
 
-[Unreleased]: https://github.com/burakdirin/apple-health-export-mcp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/chienchuanw/apple-health-export-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/chienchuanw/apple-health-export-mcp/tree/v0.2.0
 [0.1.1]: https://github.com/burakdirin/apple-health-export-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/burakdirin/apple-health-export-mcp/releases/tag/v0.1.0

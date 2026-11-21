@@ -9,6 +9,7 @@ an output schema per tool. The DB must already exist — build it with
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import contextmanager
 from typing import Annotated, Literal
 
@@ -16,7 +17,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from apple_health_export_mcp import queries
-from apple_health_export_mcp.db import connect
+from apple_health_export_mcp.db import connect_readonly
 
 # All tools only read a local, fixed DB: safe to retry, no side effects, no open world.
 READONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
@@ -58,15 +59,18 @@ Source = Annotated[
 def _store():
     """Open the health DB for the duration of one tool call.
 
+    Read-only (`mode=ro`): the server can never modify the DB, even via a bug.
     Surfaces a clean ToolError (instead of a raw traceback) when the DB hasn't
-    been built yet, and always closes the connection.
+    been built yet or a query fails, and always closes the connection.
     """
     try:
-        conn = connect(create=False)
-    except FileNotFoundError as e:
+        conn = connect_readonly()
+    except (FileNotFoundError, sqlite3.Error) as e:
         raise ToolError(str(e)) from e
     try:
         yield conn
+    except sqlite3.Error as e:
+        raise ToolError(f"Database error: {e}. Re-run `apple-health-export-mcp-ingest` if it persists.") from e
     finally:
         conn.close()
 
@@ -123,7 +127,17 @@ def get_sleep(start: DateStr, end: DateStr) -> list[queries.SleepNight]:
 
 
 def get_workouts(start: DateStr, end: DateStr) -> list[queries.WorkoutSummary]:
-    """Workout summary per activity type in a date range: count, total & avg minutes."""
+    """Workout summary per activity type in a date range.
+
+    Returns [{activity, n, total_min, avg_min, max_min, total_distance_km,
+    total_energy_kcal, avg_heart_rate}]. Units are normalized (km, kcal, minutes).
+    avg_heart_rate (bpm) is weighted by workout duration; it comes from the workout's
+    heart-rate statistic or, without one, from heart-rate samples recorded during it
+    (only if there is at least one per minute of its start-to-end window). A field is
+    null when the export has no such data. max_min is the longest single workout: if it is far above avg_min, a
+    session was probably left running and skews total_min/avg_min, so call it out
+    instead of taking the totals at face value.
+    """
     with _store() as conn:
         return queries.workouts(conn, start, end)
 
