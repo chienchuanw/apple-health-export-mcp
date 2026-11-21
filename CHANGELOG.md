@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-21
+
 ### Added
 - `get_workouts` now also returns `total_distance_km`, `total_energy_kcal` and a
   duration-weighted `avg_heart_rate`, parsed from `<WorkoutStatistics>` (direct or
@@ -45,6 +47,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   percent-encoded `file:` URI); only ingest writes. A 0.1.1-built database (left in
   WAL mode) stays readable even when its `-wal`/`-shm` files are gone, and
   `get_workouts` works on it before re-ingest (statistics read as null until then).
+- The sdist is built from an explicit allowlist, so a local `uv build` can no longer
+  pick up untracked files (notes, session logs, health exports) from the checkout.
 
 ## [0.1.1] - 2026-06-30
 
@@ -72,6 +76,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Coaching prompts: `daily_summary`, `weekly_review`, `monthly_summary`,
   `yearly_summary`, `readiness_check`, `sleep_report`.
 
-[Unreleased]: https://github.com/burakdirin/apple-health-export-mcp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/chienchuanw/apple-health-export-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/chienchuanw/apple-health-export-mcp/tree/v0.2.0
 [0.1.1]: https://github.com/burakdirin/apple-health-export-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/burakdirin/apple-health-export-mcp/releases/tag/v0.1.0
