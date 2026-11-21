@@ -243,16 +243,19 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
     legacy totalDistance attribute) in km; energy is active energy in kcal. Average
     heart rate is weighted by workout duration over workouts that have one: the HR
     statistic, else the mean of HeartRate samples during the workout when there is at
-    least one per minute (sparser readings leave it null).
+    least one per minute of its start-to-end window (sparser readings leave it null).
     """
     has_stats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workout_stat'").fetchone()
     stats = "workout_stat" if has_stats else _NO_STATS
     rows = conn.execute(
         f"""
         WITH w AS (
-            SELECT key, activity, local_date, end, {_utc("start")} t0, {_utc("end")} t1,
-                   duration * {_factor("COALESCE(duration_unit, 'min')", _TO_MIN)} dur_min
-            FROM workout WHERE local_date BETWEEN ? AND ?),
+            SELECT *,
+                   -- julianday is a float: 30 min comes out as 30.0000002 without rounding.
+                   ROUND((t1 - t0) * 1440, 3) win_min
+            FROM (SELECT key, activity, local_date, end, {_utc("start")} t0, {_utc("end")} t1,
+                         duration * {_factor("COALESCE(duration_unit, 'min')", _TO_MIN)} dur_min
+                  FROM workout WHERE local_date BETWEEN ? AND ?)),
         st AS (
             SELECT workout_key,
                    -- Legacy attribute only when the workout has no statistic: a later
@@ -281,8 +284,9 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
             GROUP BY w.key),
         wh AS (
             SELECT w.*, st.km, st.kcal,
-                   -- Sparse background readings don't describe a workout: need >= 1/min.
-                   COALESCE(st.hr, CASE WHEN hs.n >= w.dur_min THEN hs.hr END) hr
+                   -- Sparse background readings don't describe a workout: need >= 1 sample
+                   -- per minute of the [start, end] window they were drawn from (pauses too).
+                   COALESCE(st.hr, CASE WHEN hs.n >= w.win_min THEN hs.hr END) hr
             FROM w LEFT JOIN st ON st.workout_key = w.key LEFT JOIN hs ON hs.key = w.key)
         SELECT activity, COUNT(*) n,
                ROUND(SUM(dur_min), 1) total_min,
