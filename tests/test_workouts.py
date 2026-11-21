@@ -155,3 +155,12 @@ def test_unknown_units_yield_null_not_a_wrong_number(tmp_path):
     conn, *_ = _ingest(tmp_path, _workout(body, unit="fortnight"))
     (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
     assert (w.total_min, w.total_distance_km) == (None, None)
+
+
+def test_summary_works_on_a_database_built_before_workout_stat(tmp_path):
+    """0.1.1 DBs have no workout_stat and the read-only server can't add it."""
+    conn, *_ = _ingest(tmp_path, _workout(duration="1", unit="hr"))
+    conn.execute("DROP TABLE workout_stat")
+    conn.commit()
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert (w.n, w.total_min, w.total_distance_km, w.total_energy_kcal, w.avg_heart_rate) == (1, 60.0, None, None, None)
