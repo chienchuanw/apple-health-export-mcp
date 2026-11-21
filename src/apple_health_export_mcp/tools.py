@@ -9,6 +9,7 @@ an output schema per tool. The DB must already exist — build it with
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import contextmanager
 from typing import Annotated, Literal
 
@@ -60,14 +61,16 @@ def _store():
 
     Read-only (`mode=ro`): the server can never modify the DB, even via a bug.
     Surfaces a clean ToolError (instead of a raw traceback) when the DB hasn't
-    been built yet, and always closes the connection.
+    been built yet or a query fails, and always closes the connection.
     """
     try:
         conn = connect_readonly()
-    except FileNotFoundError as e:
+    except (FileNotFoundError, sqlite3.Error) as e:
         raise ToolError(str(e)) from e
     try:
         yield conn
+    except sqlite3.Error as e:
+        raise ToolError(f"Database error: {e}. Re-run `apple-health-export-mcp-ingest` if it persists.") from e
     finally:
         conn.close()
 
