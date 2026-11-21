@@ -19,6 +19,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dependency bound tightened to `fastmcp>=3.4.10,<4` (stay on the 3.x major); lockfile refreshed.
 - CI actions are pinned to full commit SHAs; CI runs with `contents: read` and does
   not persist the checkout token.
+- Ingest still uses WAL for speed but leaves the database as a single file
+  (`journal_mode=DELETE`), and its summary reports the workout statistics count.
+- A malformed numeric attribute is stored as null instead of aborting the ingest.
 
 ### Fixed
 - `get_workouts` `total_min` / `avg_min` honor `durationUnit` (hours and seconds were
@@ -27,12 +30,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   which `get_quantity` never matches; they now use full `HKQuantityTypeIdentifier…` ids.
 - The missing-database hint named `apple-health-export-mcp ingest` instead of the real
   `apple-health-export-mcp-ingest` command.
+- Database errors raised while a tool runs surface as a clean tool error.
 
 ### Security
 - The health database (and its `-wal` / `-shm` files) is created owner-only (`0600`),
   a directory it creates is `0700`, and an existing database is tightened on ingest.
 - The MCP server opens the database read-only (SQLite `mode=ro` via a
-  percent-encoded `file:` URI); only ingest writes.
+  percent-encoded `file:` URI); only ingest writes. A 0.1.1-built database (left in
+  WAL mode) stays readable even when its `-wal`/`-shm` files are gone, and
+  `get_workouts` works on it before re-ingest (statistics read as null until then).
 
 ## [0.1.1] - 2026-06-30
 
