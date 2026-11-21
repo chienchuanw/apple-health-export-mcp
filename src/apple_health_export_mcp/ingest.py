@@ -215,5 +215,8 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
     conn.commit()
+    # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
+    # server can't create -wal/-shm, and Linux SQLite deletes them on close.
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.close()
     return counts

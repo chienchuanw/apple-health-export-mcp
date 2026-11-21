@@ -43,3 +43,39 @@ def test_missing_db_names_the_real_ingest_command(tmp_path, monkeypatch):
     monkeypatch.setenv("AH_DB_PATH", str(tmp_path / "absent.db"))
     with pytest.raises(ToolError, match="apple-health-export-mcp-ingest <export.zip>"):
         tools.list_types()
+
+
+def _drop_sidecars(db):
+    for suffix in ("-wal", "-shm"):
+        side = db.with_name(db.name + suffix)
+        if side.exists():
+            side.unlink()
+
+
+def test_ingest_leaves_a_single_file_database(ingested_db):
+    """A read-only reader can't create -wal/-shm, so ingest must not leave the DB in WAL mode."""
+    conn = sqlite3.connect(ingested_db)
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    conn.close()
+    _drop_sidecars(ingested_db)  # Linux SQLite deletes them on close; macOS keeps them
+    assert [t.type for t in tools.list_types()] == ["HKQuantityTypeIdentifierStepCount"]
+
+
+def test_wal_database_without_sidecars_stays_readable(ingested_db):
+    """A DB built by 0.1.1 is persistently in WAL mode; it must still open read-only."""
+    conn = sqlite3.connect(ingested_db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.close()
+    _drop_sidecars(ingested_db)
+    assert [t.type for t in tools.list_types()] == ["HKQuantityTypeIdentifierStepCount"]
+    with tools._store() as conn:
+        with pytest.raises(sqlite3.OperationalError, match="readonly"):
+            conn.execute("INSERT INTO meta(k,v) VALUES('x','y')")
+
+
+def test_database_errors_surface_as_tool_errors(tmp_path, monkeypatch):
+    empty = tmp_path / "empty.db"
+    sqlite3.connect(empty).close()  # valid SQLite file, but no schema
+    monkeypatch.setenv("AH_DB_PATH", str(empty))
+    with pytest.raises(ToolError, match="no such table"):
+        tools.list_types()

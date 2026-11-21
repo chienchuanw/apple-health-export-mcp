@@ -110,7 +110,18 @@ def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
     """
     p = (path or db_path()).resolve()
     _require(p)
-    conn = sqlite3.connect(f"{p.as_uri()}?mode=ro", uri=True)
+    uri = p.as_uri()
+    conn = sqlite3.connect(f"{uri}?mode=ro", uri=True)
+    try:
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchall()
+    except sqlite3.OperationalError:
+        # A WAL-mode DB (e.g. built by 0.1.1) whose -wal/-shm are gone — deleted on
+        # close, or the file was copied alone. A mode=ro reader can't recreate them.
+        # No WAL file means no writer and nothing un-checkpointed, so immutable is safe.
+        conn.close()
+        if p.with_name(p.name + "-wal").exists():
+            raise
+        conn = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
