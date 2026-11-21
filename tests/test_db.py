@@ -2,6 +2,7 @@
 
 import os
 import stat
+from pathlib import Path
 
 from apple_health_export_mcp.db import connect, init_schema
 
@@ -32,17 +33,25 @@ def test_existing_db_permissions_are_tightened(tmp_path):
 
 def test_wal_and_shm_sidecars_are_owner_only(tmp_path):
     db = tmp_path / "health.db"
-    old = os.umask(0o022)  # the common default, which would make files world-readable
+    old = os.umask(0o022)  # the common default, which would make new files world-readable
     try:
         conn = connect(db, create=True)
-    finally:
-        os.umask(old)
-    conn.execute("PRAGMA journal_mode=WAL")
-    init_schema(conn)
-    conn.execute("INSERT INTO meta(k,v) VALUES('x','y')")
-    conn.commit()
-    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        init_schema(conn)
+        conn.execute("INSERT INTO meta(k,v) VALUES('x','y')")
+        conn.commit()
         for side in ("health.db-wal", "health.db-shm"):
             assert _mode(tmp_path / side) == 0o600, side
-    finally:
         conn.close()
+    finally:
+        os.umask(old)
+
+
+def test_directory_created_concurrently_is_not_an_error(tmp_path, monkeypatch):
+    """Two first-run ingests race between the exists() check and mkdir()."""
+    parent = tmp_path / "data"
+    parent.mkdir()
+    real_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda self: False if self == parent else real_exists(self))
+    connect(parent / "health.db", create=True).close()
+    assert _mode(parent / "health.db") == 0o600

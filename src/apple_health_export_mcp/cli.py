@@ -30,7 +30,10 @@ def main(argv: list[str] | None = None) -> int:
     dest = args.db or db_path()
     print(f"Ingesting {args.zip} → {dest}")
     counts = ingest(args.zip, args.db)
-    print(f"Done: {counts['record']:,} records, {counts['workout']:,} workouts → {dest}")
+    print(
+        f"Done: {counts['record']:,} records, {counts['workout']:,} workouts "
+        f"({counts['workout_stat']:,} workout statistics) → {dest}"
+    )
     return 0
 
 
