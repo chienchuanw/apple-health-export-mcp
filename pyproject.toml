@@ -21,7 +21,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "fastmcp>=3.4",
+    "fastmcp>=3.4.10,<5",
 ]
 
 [project.scripts]
