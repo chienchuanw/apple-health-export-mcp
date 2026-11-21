@@ -104,7 +104,7 @@ and the most reliable cleanup. `fastmcp run fastmcp.json` is for local dev only.
 | `list_sources(type)`                                  | Which devices/apps wrote a metric (counts, date spans)                      |
 | `get_quantity(type, start, end, agg, bucket, source)` | Per day/week/month/all aggregate for a numeric metric (steps, HR, weight…)  |
 | `get_sleep(start, end)`                               | Per-night sleep stage durations                                             |
-| `get_workouts(start, end)`                            | Per activity: count, minutes (total/avg/longest), distance (km), active energy (kcal), avg HR |
+| `get_workouts(start, end)`                            | Per activity: count, minutes (total/avg/max), km, active kcal, avg HR       |
 
 All query tools require a date range and return **aggregates only** — never raw rows (ADR-0008).
 `get_quantity` with `agg="sum"` auto-deduplicates parallel devices (Watch + iPhone + apps) so totals
@@ -112,7 +112,7 @@ aren't inflated (ADR-0010); pass `source` (see `list_sources`) to force one devi
 `get_workouts` normalizes units (mi → km, kJ → kcal, hours/seconds → minutes) and weights the
 average heart rate by workout duration; a field is `null` when the export has no such data (ADR-0011).
 A workout without a heart-rate statistic uses the heart-rate samples recorded during it, if there is
-at least one per minute (ADR-0012).
+at least one per minute of its start-to-end window (ADR-0012).
 `max_min` is the longest single workout: one far above `avg_min` usually means a session was left
 running, so it is surfaced rather than silently excluded.
 

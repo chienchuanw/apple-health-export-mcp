@@ -314,3 +314,47 @@ def test_max_min_is_null_when_no_duration_is_known(tmp_path):
     conn, *_ = _ingest(tmp_path, _workout(unit="fortnight"))
     (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
     assert w.max_min is None
+
+
+def test_density_is_measured_over_the_whole_window_not_active_time(tmp_path):
+    """Paused workout: 20 active min in a 60-min window; 20 samples is 1 per 3 min of window."""
+    paused = _workout(duration="20", end="2026-06-18 08:00:00 +0300")
+    conn, *_ = _ingest(tmp_path, paused, _hr_samples([150] * 20, step_s=180))
+    assert _hr(conn) is None
+
+
+def test_samples_dated_the_day_before_under_another_offset(tmp_path):
+    """01:00 +0300 workout; its samples, written under +0000, fall on the previous local day."""
+    early = _workout(start="2026-06-18 01:00:00 +0300", end="2026-06-18 01:30:00 +0300")
+    samples = _hr_samples([150] * 30, start="2026-06-17 22:00:30", offset="+0000")
+    conn, *_ = _ingest(tmp_path, early, samples)
+    assert _hr(conn) == 150.0
+
+
+def test_samples_dated_the_day_after_under_another_offset(tmp_path):
+    """23:00 +0000 workout; its samples, written under +0300, fall on the next local day."""
+    late = _workout(start="2026-06-18 23:00:00 +0000", end="2026-06-18 23:30:00 +0000")
+    samples = _hr_samples([150] * 30, start="2026-06-19 02:00:30", offset="+0300")
+    conn, *_ = _ingest(tmp_path, late, samples)
+    assert _hr(conn) == 150.0
+
+
+def test_multi_day_workout_uses_samples_from_its_last_day(tmp_path):
+    """48 h window: the scan must reach the end date, not just the start date + 1."""
+    long = _workout(duration="48", unit="hr", end="2026-06-20 07:00:00 +0300")
+    samples = _hr_samples([150] * 3000, start="2026-06-20 00:00:00", step_s=5)
+    conn, *_ = _ingest(tmp_path, long, samples)
+    assert _hr(conn) == 150.0
+
+
+def test_fallback_alongside_other_statistics(tmp_path):
+    conn, *_ = _ingest(tmp_path, _workout(_stat(DIST, "km", sum="5")), _hr_samples([150] * 30))
+    (w,) = queries.workouts(conn, "2026-06-18", "2026-06-18")
+    assert (w.total_distance_km, w.avg_heart_rate) == (5.0, 150.0)
+
+
+def test_fallback_on_a_database_built_before_workout_stat(tmp_path):
+    conn, *_ = _ingest(tmp_path, _workout(), _hr_samples([150] * 30))
+    conn.execute("DROP TABLE workout_stat")
+    conn.commit()
+    assert _hr(conn) == 150.0
