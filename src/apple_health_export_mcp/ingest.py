@@ -10,8 +10,10 @@ Validated against a real tr_TR export (HealthKit Export Version 14, ~2.4M record
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import zipfile
 from collections.abc import Iterator
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -240,7 +242,10 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
     conn.commit()
     # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
-    # server can't create -wal/-shm, and Linux SQLite deletes them on close.
-    conn.execute("PRAGMA journal_mode=DELETE")
+    # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
+    # with a server connection attached the switch is refused ("database is locked"),
+    # but every row is already committed and connect_readonly copes with a WAL DB.
+    with suppress(sqlite3.OperationalError):
+        conn.execute("PRAGMA journal_mode=DELETE")
     conn.close()
     return counts
