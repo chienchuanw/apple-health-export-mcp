@@ -9,6 +9,14 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import date, timedelta
+
+
+def week_range(d: str) -> tuple[str, str]:
+    """Monday–Sunday calendar week containing date `d` ('YYYY-MM-DD')."""
+    dt = date.fromisoformat(d)
+    monday = dt - timedelta(days=dt.weekday())
+    return monday.isoformat(), (monday + timedelta(days=6)).isoformat()
 
 
 @dataclass
