@@ -26,9 +26,10 @@ dependencies = [
 
 [project.scripts]
 # Bare command starts the stdio MCP server (Pattern B — matches every reference
-# server; fewest process layers; exits on stdin EOF). Ingest is a separate script.
+# server; fewest process layers; exits on stdin EOF). Ingest and report are separate scripts.
 apple-health-export-mcp = "apple_health_export_mcp.server:main"
 apple-health-export-mcp-ingest = "apple_health_export_mcp.cli:main"
+apple-health-export-mcp-report = "apple_health_export_mcp.cli:report_main"
 
 [project.urls]
 Homepage = "https://github.com/burakdirin/apple-health-export-mcp"
