@@ -66,16 +66,24 @@ def db_path() -> Path:
     return Path(base) / "apple-health-export-mcp" / "health.db"
 
 
+def private_dir(d: Path) -> None:
+    """Create directory `d` owner-only (0700) if missing; an existing one is left alone.
+
+    A pre-existing parent (e.g. ~/Documents via AH_DB_PATH) is the user's to manage.
+    """
+    if not d.exists():
+        d.mkdir(parents=True, exist_ok=True)  # exist_ok: a concurrent ingest may win the race
+        os.chmod(d, 0o700)  # explicit: mkdir's mode is filtered by the umask
+
+
 def _make_private(p: Path) -> None:
     """Create the DB file owner-only (0600) and tighten an existing one.
 
     Health data must not be world-readable. Only the directory we create is set to
-    0700 — a pre-existing parent (e.g. ~/Documents via AH_DB_PATH) is left alone.
-    SQLite creates -wal/-shm with the main file's mode, but tighten any stale ones too.
+    0700 (`private_dir`). SQLite creates -wal/-shm with the main file's mode, but
+    tighten any stale ones too.
     """
-    if not p.parent.exists():
-        p.parent.mkdir(parents=True, exist_ok=True)  # exist_ok: a concurrent ingest may win the race
-        os.chmod(p.parent, 0o700)  # explicit: mkdir's mode is filtered by the umask
+    private_dir(p.parent)
     os.close(os.open(p, os.O_CREAT | os.O_RDWR, 0o600))
     for f in (p, p.with_name(p.name + "-wal"), p.with_name(p.name + "-shm")):
         if f.exists():
