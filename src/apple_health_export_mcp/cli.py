@@ -76,7 +76,12 @@ def report_main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         conn.close()
-    print(f"Wrote {report.write(args.out.expanduser(), label, text)}")
+    try:
+        note = report.write(args.out.expanduser(), label, text)
+    except OSError as e:
+        print(f"error: cannot write the report: {e}", file=sys.stderr)
+        return 1
+    print(f"Wrote {note}")
     return 0
 
 

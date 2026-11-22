@@ -34,9 +34,10 @@ def resolve_week(
     `week` is an ISO week ('2026-W47'), `week_of` any date inside the week. With
     neither, the last completed Monday–Sunday week before `today`.
     """
-    if week and week_of:
+    # `is not None`, not truthiness: an empty argument is an error, not "last week".
+    if week is not None and week_of is not None:
         raise ValueError("Pass week or week_of, not both.")
-    if week:
+    if week is not None:
         bad = f"week must be an ISO week 'YYYY-Www', got {week!r}"
         m = _ISO_WEEK.fullmatch(week)
         if not m:
@@ -46,7 +47,7 @@ def resolve_week(
         except ValueError:
             raise ValueError(bad) from None
     else:
-        day = week_of or ((today or date.today()) - timedelta(days=7)).isoformat()
+        day = week_of if week_of is not None else ((today or date.today()) - timedelta(days=7)).isoformat()
     start, end = week_range(day)
     year, num, _ = date.fromisoformat(start).isocalendar()
     return f"{year}-W{num:02d}", start, end
@@ -86,7 +87,8 @@ def build(conn: sqlite3.Connection, label: str, start: str, end: str) -> str:
     Steps and active energy are per-day sums de-duplicated across devices (ADR-0010);
     `steps_daily_avg` averages over the days that have step data, not over 7. Resting
     HR and HRV average the samples. Sleep counts nights with time asleep, attributed
-    to the wake-up day. A metric with no data is `null`, never 0.
+    to the wake-up day (an InBed-only night counts as none). A metric with no data is
+    `null`, never 0; counts are 0. ADR-0014.
     """
 
     def daily(type_: str, agg: str) -> list[queries.QuantityPoint]:
@@ -155,13 +157,21 @@ def write(out_dir: Path, label: str, text: str) -> Path:
 
     An unchanged rewrite would still bump the mtime and wake up vault sync. The new
     content goes to a temp file first and is renamed over the note, so a vault app
-    never reads a half-written file.
+    never reads a half-written file; a failed write removes the temp file. The note
+    is owner-only (0600), like the DB: it holds health data.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     note = out_dir / f"{label}.md"
     if note.exists() and note.read_text(encoding="utf-8") == text:
         return note
     tmp = note.with_name(f".{note.name}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, note)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with open(fd, "w", encoding="utf-8") as f:
+            os.fchmod(fd, 0o600)  # a pre-existing temp file keeps its old mode otherwise
+            f.write(text)
+        os.replace(tmp, note)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return note

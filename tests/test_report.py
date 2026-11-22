@@ -3,6 +3,7 @@
 import ast
 import os
 import sqlite3
+import stat
 from datetime import date
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -188,3 +189,36 @@ def test_cli_treats_an_empty_report_dir_as_unset(synth_db, monkeypatch, capsys):
     monkeypatch.setenv("AH_REPORT_DIR", "")
     assert report_main(["--db", str(synth_db)]) == 1
     assert "AH_REPORT_DIR" in capsys.readouterr().err
+
+
+def test_note_is_owner_only_like_the_db(synth_db, tmp_path):
+    assert report_main(["--week-of", "2026-10-01", "--out", str(tmp_path), "--db", str(synth_db)]) == 0
+    assert stat.S_IMODE((tmp_path / "2026-W40.md").stat().st_mode) == 0o600
+
+
+def test_cli_out_that_is_a_file_fails_cleanly(synth_db, tmp_path, capsys):
+    not_a_dir = tmp_path / "taken"
+    not_a_dir.write_text("x")
+    assert report_main(["--out", str(not_a_dir), "--db", str(synth_db)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Traceback" not in err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_cli_unwritable_out_fails_cleanly_and_leaves_no_temp_file(synth_db, tmp_path, capsys):
+    out = tmp_path / "ro"
+    out.mkdir()
+    out.chmod(0o500)
+    try:
+        assert report_main(["--week-of", "2026-10-01", "--out", str(out), "--db", str(synth_db)]) == 1
+        assert capsys.readouterr().err.startswith("error:")
+        assert list(out.iterdir()) == []
+    finally:
+        out.chmod(0o700)
+
+
+@pytest.mark.parametrize("flag", ["--week", "--week-of"])
+def test_cli_empty_week_argument_is_an_error_not_last_week(synth_db, tmp_path, capsys, flag):
+    assert report_main([flag, "", "--out", str(tmp_path), "--db", str(synth_db)]) == 1
+    assert capsys.readouterr().err.startswith("error:")
+    assert not list(tmp_path.glob("*.md"))
