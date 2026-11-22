@@ -206,3 +206,36 @@ def test_both_tools_are_registered_with_output_schemas():
 def test_coaching_prompts_use_the_new_tools():
     assert "get_baseline" in prompts.readiness_check()
     assert "get_training_load" in prompts.weekly_review()
+
+
+@pytest.mark.parametrize("imperial", [False, True])
+def test_training_load_matches_get_workouts_week_by_week(tmp_path, imperial):
+    """Same unit normalization as get_workouts (mi->km, kJ->kcal, hr->min)."""
+    db = tmp_path / "h.db"
+    ingest(write_export(tmp_path / "x.zip", 30, imperial=imperial), db, progress=lambda *_: None)
+    conn = connect_readonly(db)
+    try:
+        for w in queries.training_load(conn, "2026-10-31", weeks=5):
+            ws = queries.workouts(conn, w.week_start, w.week_end)
+            assert w.sessions == sum(x.n for x in ws)
+            assert w.total_min == pytest.approx(sum(x.total_min for x in ws))
+            assert w.total_km == pytest.approx(sum(x.total_distance_km for x in ws) if ws else 0)
+            assert w.total_kcal == pytest.approx(sum(x.total_energy_kcal for x in ws) if ws else 0)
+    finally:
+        conn.close()
+
+
+def test_sleep_baseline_reports_its_series_not_an_aggregation(synth):
+    conn, _ = synth
+    assert queries.baseline(conn, SLEEP, "2026-11-09").agg == "asleep_min"
+
+
+def test_workout_with_unknown_duration_unit_counts_as_a_session_with_no_minutes():
+    conn = _db()
+    start = "2026-06-29 06:00:00 +0300"
+    conn.execute(
+        "INSERT INTO workout(key,activity,duration,duration_unit,start,end,local_date) VALUES (?,?,?,?,?,?,?)",
+        (b"w", "HKWorkoutActivityTypeRunning", 3, "fortnight", start, start, "2026-06-29"),
+    )
+    (w,) = queries.training_load(conn, END.isoformat(), weeks=1)
+    assert (w.sessions, w.total_min) == (1, 0)

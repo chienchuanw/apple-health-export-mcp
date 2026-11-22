@@ -13,6 +13,13 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 
+def week_range(d: str) -> tuple[str, str]:
+    """Monday–Sunday calendar week containing date `d` ('YYYY-MM-DD')."""
+    dt = date.fromisoformat(d)
+    monday = dt - timedelta(days=dt.weekday())
+    return monday.isoformat(), (monday + timedelta(days=6)).isoformat()
+
+
 @dataclass
 class TypeInfo:
     """A metric present in the data, with its row count and date span."""
@@ -271,6 +278,36 @@ def _utc(col: str) -> str:
 _NO_STATS = "(SELECT NULL workout_key, NULL type, NULL unit, NULL sum, NULL average WHERE 0)"
 
 
+def _stats_table(conn: sqlite3.Connection) -> str:
+    """`workout_stat`, or an empty stand-in on a DB built before it existed."""
+    has = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workout_stat'").fetchone()
+    return "workout_stat" if has else _NO_STATS
+
+
+def _workout_stats_cte(stats: str) -> str:
+    """CTE `st`: per workout in CTE `w` (by `key`), km, active kcal and HR statistic.
+
+    Shared by `workouts()` and `training_load()` so both normalize units the same way
+    (ADR-0011). Interpolates constants and a table name only.
+    """
+    return f"""
+st AS (
+    SELECT workout_key,
+           -- Legacy attribute only when the workout has no statistic: a later
+           -- export of the same workout may add one (ADR-0011).
+           COALESCE(
+               SUM(CASE WHEN type LIKE 'HKQuantityTypeIdentifierDistance%'
+                        THEN sum * {_factor("unit", _TO_KM)} END),
+               MAX(CASE WHEN type = 'totalDistance' THEN sum * {_factor("unit", _TO_KM)} END)) km,
+           COALESCE(
+               SUM(CASE WHEN type = 'HKQuantityTypeIdentifierActiveEnergyBurned'
+                        THEN sum * {_factor("unit", _TO_KCAL)} END),
+               MAX(CASE WHEN type = 'totalEnergyBurned' THEN sum * {_factor("unit", _TO_KCAL)} END)) kcal,
+           MAX(CASE WHEN type = 'HKQuantityTypeIdentifierHeartRate' THEN average END) hr
+    FROM {stats} WHERE workout_key IN (SELECT key FROM w)
+    GROUP BY workout_key)"""
+
+
 def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSummary]:
     """Per-activity workout summary in range: count, minutes, distance, energy, heart rate.
 
@@ -284,8 +321,6 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
     statistic, else the mean of HeartRate samples during the workout when there is at
     least one per minute of its start-to-end window (sparser readings leave it null).
     """
-    has_stats = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workout_stat'").fetchone()
-    stats = "workout_stat" if has_stats else _NO_STATS
     rows = conn.execute(
         f"""
         WITH w AS (
@@ -295,21 +330,7 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
             FROM (SELECT key, activity, local_date, end, {_utc("start")} t0, {_utc("end")} t1,
                          duration * {_factor("COALESCE(duration_unit, 'min')", _TO_MIN)} dur_min
                   FROM workout WHERE local_date BETWEEN ? AND ?)),
-        st AS (
-            SELECT workout_key,
-                   -- Legacy attribute only when the workout has no statistic: a later
-                   -- export of the same workout may add one (ADR-0011).
-                   COALESCE(
-                       SUM(CASE WHEN type LIKE 'HKQuantityTypeIdentifierDistance%'
-                                THEN sum * {_factor("unit", _TO_KM)} END),
-                       MAX(CASE WHEN type = 'totalDistance' THEN sum * {_factor("unit", _TO_KM)} END)) km,
-                   COALESCE(
-                       SUM(CASE WHEN type = 'HKQuantityTypeIdentifierActiveEnergyBurned'
-                                THEN sum * {_factor("unit", _TO_KCAL)} END),
-                       MAX(CASE WHEN type = 'totalEnergyBurned' THEN sum * {_factor("unit", _TO_KCAL)} END)) kcal,
-                   MAX(CASE WHEN type = 'HKQuantityTypeIdentifierHeartRate' THEN average END) hr
-            FROM {stats} WHERE workout_key IN (SELECT key FROM w)
-            GROUP BY workout_key),
+        {_workout_stats_cte(_stats_table(conn))},
         hs AS (
             -- No HR statistic: average the HeartRate samples recorded during the workout,
             -- compared as UTC instants. local_date only bounds the index scan (±1 day for
@@ -366,6 +387,14 @@ def _r(v: float | None, nd: int = 2) -> float | None:
     return None if v is None else round(v, nd)
 
 
+def daily_series(conn: sqlite3.Connection, type: str, start: str, end: str, agg: str = "avg") -> dict[str, float]:
+    """One value per local day that has data: `quantity(..., agg, "day")`, or for
+    `HKCategoryTypeIdentifierSleepAnalysis` minutes asleep per night (`agg` ignored)."""
+    if type == SLEEP_TYPE:
+        return {n.night: n.asleep_min for n in sleep(conn, start, end) if n.asleep_min > 0}
+    return {p.period: p.value for p in quantity(conn, type, start, end, agg, "day")}
+
+
 def baseline(
     conn: sqlite3.Connection,
     type: str,
@@ -376,22 +405,16 @@ def baseline(
 ) -> Baseline:
     """Compare the `recent_days` ending at `end` with the `baseline_days` just before them.
 
-    Daily values come from `quantity(..., agg, "day")`, so `sum` keeps its per-day
-    device dedupe (ADR-0010). For `HKCategoryTypeIdentifierSleepAnalysis` the daily
-    value is minutes asleep per night (nights with any), and `agg` is ignored.
+    Daily values come from `daily_series`, so `sum` keeps its per-day device dedupe
+    (ADR-0010) and sleep is minutes asleep per night (reported as agg 'asleep_min').
     """
-    if agg not in _AGG:
-        raise ValueError(f"agg must be one of {sorted(_AGG)}")
     if recent_days < 1 or baseline_days < 1:
         raise ValueError("recent_days and baseline_days must be at least 1")
     e = date.fromisoformat(end)
     r0 = e - timedelta(days=recent_days - 1)
     b1 = r0 - timedelta(days=1)
     b0 = b1 - timedelta(days=baseline_days - 1)
-    if type == SLEEP_TYPE:
-        daily = {n.night: n.asleep_min for n in sleep(conn, b0.isoformat(), end) if n.asleep_min > 0}
-    else:
-        daily = {p.period: p.value for p in quantity(conn, type, b0.isoformat(), end, agg, "day")}
+    daily = daily_series(conn, type, b0.isoformat(), end, agg)
     recent = [v for d, v in daily.items() if d >= r0.isoformat()]
     base = [v for d, v in daily.items() if d < r0.isoformat()]
     rm = statistics.fmean(recent) if recent else None
@@ -400,7 +423,7 @@ def baseline(
     delta = rm - bm if rm is not None and bm is not None else None
     return Baseline(
         type=type,
-        agg=agg,
+        agg="asleep_min" if type == SLEEP_TYPE else agg,
         recent_start=r0.isoformat(),
         recent_end=end,
         recent_mean=_r(rm),
@@ -421,34 +444,45 @@ def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[Tr
 
     The last week may be partial (it ends at its Sunday, not at `end`). Each week's
     `acwr` divides its minutes by the mean of the 4 weeks before it; those are read
-    too, so every returned week has one. Units follow `workouts()` (ADR-0011).
+    too, so every returned week has one. One query, with the same unit normalization
+    as `workouts()` (ADR-0011) but without its heart-rate fallback, which load ignores.
     """
     if not 1 <= weeks <= MAX_LOAD_WEEKS:
         raise ValueError(f"weeks must be between 1 and {MAX_LOAD_WEEKS}")
-    e = date.fromisoformat(end)
-    last = e - timedelta(days=e.weekday())
-    rows = []
-    for k in range(weeks + _CHRONIC_WEEKS - 1, -1, -1):
-        mon = last - timedelta(weeks=k)
-        ws = workouts(conn, mon.isoformat(), (mon + timedelta(days=6)).isoformat())
-        sessions = sum(w.n for w in ws)
-
-        def total(vals, sessions=sessions):
-            present = [v for v in vals if v is not None]
-            return round(sum(present), 2) if present else (0 if not sessions else None)
-
-        rows.append(
+    last = date.fromisoformat(week_range(end)[0])
+    mondays = [last - timedelta(weeks=k) for k in range(weeks + _CHRONIC_WEEKS - 1, -1, -1)]
+    first, final = mondays[0].isoformat(), week_range(end)[1]
+    rows = conn.execute(
+        f"""
+        WITH w AS (
+            SELECT key, local_date,
+                   duration * {_factor("COALESCE(duration_unit, 'min')", _TO_MIN)} dur_min
+            FROM workout WHERE local_date BETWEEN ? AND ?),
+        {_workout_stats_cte(_stats_table(conn))}
+        SELECT date(w.local_date, 'weekday 0', '-6 days') monday, COUNT(*) n,
+               -- An unknown duration unit is NULL (ADR-0011): a session, but no minutes.
+               COALESCE(SUM(dur_min), 0) mins, SUM(st.km) km, SUM(st.kcal) kcal
+        FROM w LEFT JOIN st ON st.workout_key = w.key
+        GROUP BY monday
+        """,
+        (first, final),
+    ).fetchall()
+    by_week = {r["monday"]: r for r in rows}
+    mins = [by_week[m.isoformat()]["mins"] if m.isoformat() in by_week else 0 for m in mondays]
+    out = []
+    for i in range(_CHRONIC_WEEKS, len(mondays)):
+        r = by_week.get(mondays[i].isoformat())
+        chronic = statistics.fmean(mins[i - _CHRONIC_WEEKS : i])
+        out.append(
             TrainingWeek(
-                week_start=mon.isoformat(),
-                week_end=(mon + timedelta(days=6)).isoformat(),
-                sessions=sessions,
-                total_min=round(sum(w.total_min or 0 for w in ws), 1),
-                total_km=total(w.total_distance_km for w in ws),
-                total_kcal=total(w.total_energy_kcal for w in ws),
-                acwr=None,
+                week_start=mondays[i].isoformat(),
+                week_end=(mondays[i] + timedelta(days=6)).isoformat(),
+                sessions=r["n"] if r else 0,
+                total_min=round(mins[i], 1),
+                # No workouts: 0. Workouts without distance/energy statistics: null.
+                total_km=_r(r["km"]) if r else 0,
+                total_kcal=_r(r["kcal"]) if r else 0,
+                acwr=round(mins[i] / chronic, 2) if chronic else None,
             )
         )
-    for i in range(_CHRONIC_WEEKS, len(rows)):
-        chronic = statistics.fmean(r.total_min for r in rows[i - _CHRONIC_WEEKS : i])
-        rows[i].acwr = round(rows[i].total_min / chronic, 2) if chronic else None
-    return rows[_CHRONIC_WEEKS:]
+    return out

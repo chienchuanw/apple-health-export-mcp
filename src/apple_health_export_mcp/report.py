@@ -15,15 +15,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from apple_health_export_mcp import queries
+from apple_health_export_mcp.queries import week_range
 
 _ISO_WEEK = re.compile(r"(\d{4})-W(\d{2})")
-
-
-def week_range(d: str) -> tuple[str, str]:
-    """Monday–Sunday calendar week containing date `d` ('YYYY-MM-DD')."""
-    dt = date.fromisoformat(d)
-    monday = dt - timedelta(days=dt.weekday())
-    return monday.isoformat(), (monday + timedelta(days=6)).isoformat()
 
 
 def resolve_week(

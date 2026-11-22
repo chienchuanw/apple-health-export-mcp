@@ -63,7 +63,8 @@ def _store():
 
     Read-only (`mode=ro`): the server can never modify the DB, even via a bug.
     Surfaces a clean ToolError (instead of a raw traceback) when the DB hasn't
-    been built yet or a query fails, and always closes the connection.
+    been built yet, an argument is rejected (ValueError) or a query fails, and
+    always closes the connection.
     """
     try:
         conn = connect_readonly()
@@ -71,6 +72,8 @@ def _store():
         raise ToolError(str(e)) from e
     try:
         yield conn
+    except ValueError as e:  # a bad argument (agg, bucket, window size...) from queries/sql
+        raise ToolError(str(e)) from e
     except sqlite3.Error as e:
         raise ToolError(f"Database error: {e}. Re-run `apple-health-export-mcp-ingest` if it persists.") from e
     finally:
@@ -112,10 +115,7 @@ def get_quantity(
     deduped. Returns [{period, value, n}].
     """
     with _store() as conn:
-        try:
-            return queries.quantity(conn, type, start, end, agg, bucket, source)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
+        return queries.quantity(conn, type, start, end, agg, bucket, source)
 
 
 def get_sleep(start: DateStr, end: DateStr) -> list[queries.SleepNight]:
@@ -181,10 +181,7 @@ def query_sql(sql: SqlQuery) -> SqlResult:
     more rows matched than were returned.
     """
     with _store() as conn:
-        try:
-            return run_select(conn, sql)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
+        return run_select(conn, sql)
 
 
 def get_baseline(
@@ -207,10 +204,7 @@ def get_baseline(
     |z| above ~1 is a notable move against the user's normal. ADR-0017.
     """
     with _store() as conn:
-        try:
-            return queries.baseline(conn, type, end, recent_days, baseline_days, agg)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
+        return queries.baseline(conn, type, end, recent_days, baseline_days, agg)
 
 
 def get_training_load(
@@ -228,10 +222,7 @@ def get_training_load(
     partial when `end` is not a Sunday. ADR-0017.
     """
     with _store() as conn:
-        try:
-            return queries.training_load(conn, end, weeks)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
+        return queries.training_load(conn, end, weeks)
 
 
 # Registered by server.py via mcp.tool(annotations=READONLY).
