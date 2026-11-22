@@ -261,24 +261,24 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     is parsed, so a file replaced mid-run is never marked as ingested.
     """
     zip_path = Path(zip_path).expanduser()
-    conn = connect(db, create=True)
-    init_schema(conn)
-    # Ingest-only speedups; safe because it's a rebuildable derived store. ADR-0003.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=OFF")
-    # Keys are content hashes (random order), so inserts hit B-tree pages all over;
-    # a 32 MB page cache (default 2 MB) cuts ingest time ~15% at no peak-RSS cost.
-    conn.execute("PRAGMA cache_size=-32768")
-    # Commit right away so the -wal file exists for the whole ingest: connect_readonly
-    # reads "no -wal" as "no writer" and may then open the DB immutable.
-    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
-    conn.execute("DELETE FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT))
-    conn.commit()
-
+    # Opened before the DB is touched: a missing file leaves the previous record intact.
     with open(zip_path, "rb") as fh:
         # Identity of the bytes about to be parsed, not of whatever the path holds later.
         source = ((_DIGEST, _hash(fh)), (_STAT, _stat_key(zip_path, os.fstat(fh.fileno()))))
         fh.seek(0)
+        conn = connect(db, create=True)
+        init_schema(conn)
+        # Ingest-only speedups; safe because it's a rebuildable derived store. ADR-0003.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=OFF")
+        # Keys are content hashes (random order), so inserts hit B-tree pages all over;
+        # a 32 MB page cache (default 2 MB) cuts ingest time ~15% at no peak-RSS cost.
+        conn.execute("PRAGMA cache_size=-32768")
+        # Commit right away so the -wal file exists for the whole ingest: connect_readonly
+        # reads "no -wal" as "no writer" and may then open the DB immutable.
+        conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
+        conn.execute("DELETE FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT))
+        conn.commit()
         counts = _parse(fh, conn, progress)
     conn.executemany("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", source)
     conn.commit()

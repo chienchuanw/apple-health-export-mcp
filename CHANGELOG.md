@@ -11,7 +11,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with the week's numbers, per-day and per-workout tables) for a notes vault such as
   Obsidian. Deterministic, read-only, and a rerun on unchanged data leaves the file
   untouched. The note is owner-only (`0600`) (ADR-0014).
-- `apple-health-export-mcp-ingest --inbox DIR [--keep N]` ingests the newest complete
+- `apple-health-export-mcp-ingest --inbox DIR [--keep N] [--settle S]` ingests the newest complete
   `*.zip` in a drop folder, and does nothing when it is not downloaded or copied yet or
   was already ingested. Safe to call repeatedly from a file watcher (ADR-0015).
 

@@ -338,3 +338,29 @@ def test_prune_tolerates_a_file_already_removed(box, monkeypatch):
 
     monkeypatch.setattr(type(new), "unlink", racing)
     assert [p.name for p in inbox.prune(box, 1)] == ["a.zip"]
+
+
+def test_prune_skips_this_run_if_a_zip_vanishes_while_sorting(box, monkeypatch):
+    _zip(box / "a.zip", 1, 1_000)
+    new = _zip(box / "b.zip", 1, 2_000)
+    real_stat = type(new).stat
+    calls = {"n": 0}
+
+    def flaky(self, *a, **kw):  # listed (is_file), then gone before its mtime is read
+        if self.name == "a.zip":
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise FileNotFoundError(self)
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(type(new), "stat", flaky)
+    assert inbox.prune(box, 1) == []
+
+
+def test_missing_zip_does_not_erase_the_previous_ingest_record(tmp_path):
+    db = tmp_path / "h.db"
+    ok = write_export(tmp_path / "ok.zip", 1)
+    ingest(ok, db, progress=lambda *_: None)
+    with pytest.raises(FileNotFoundError):
+        ingest(tmp_path / "gone.zip", db, progress=lambda *_: None)
+    assert is_ingested(ok, db)
