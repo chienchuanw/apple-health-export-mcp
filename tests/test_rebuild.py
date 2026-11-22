@@ -1,6 +1,7 @@
 """Re-ingest rebuilds the DB and swaps it in, so edits and deletions on the phone show up."""
 
 import os
+import sqlite3
 import stat
 import zipfile
 from xml.etree import ElementTree as ET
@@ -10,7 +11,7 @@ from fixtures.synthetic import write_export
 
 from apple_health_export_mcp.cli import main
 from apple_health_export_mcp.db import connect_readonly
-from apple_health_export_mcp.ingest import ShrinkRefused, ingest
+from apple_health_export_mcp.ingest import RebuildRefused, SwapFailed, ingest
 
 STEPS = "HKQuantityTypeIdentifierStepCount"
 WEIGHT = "HKQuantityTypeIdentifierBodyMass"
@@ -91,7 +92,7 @@ def test_much_smaller_export_is_not_swapped_in(tmp_path):
     db = tmp_path / "h.db"
     ingest(write_export(tmp_path / "big.zip", 4), db, progress=_quiet)  # 40 records
     before = db.read_bytes()
-    with pytest.raises(ShrinkRefused, match="--merge"):
+    with pytest.raises(RebuildRefused, match="--merge"):
         ingest(write_export(tmp_path / "small.zip", 1), db, progress=_quiet)  # 10 records
     assert db.read_bytes() == before
     assert (tmp_path / "h.db.building").exists()  # kept for inspection
@@ -111,7 +112,9 @@ def test_old_sidecar_files_do_not_survive_the_swap(tmp_path, suffix):
     ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet)
     stale = db.with_name(db.name + suffix)
     stale.write_bytes(b"stale sidecar from an older DB")
-    ingest(_export(tmp_path / "b.zip", B), db, progress=_quiet)
+    # A -journal makes the current DB unreadable to the guard, which then refuses
+    # (fail closed, see test_current_db_that_cannot_be_read_...); --force replaces it.
+    ingest(_export(tmp_path / "b.zip", B), db, progress=_quiet, force=suffix == "-journal")
     assert not stale.exists()
     assert _weights(db) == ["79.5"]
 
@@ -197,9 +200,97 @@ def test_inbox_rebuilds_too(tmp_path):
     assert _weights(db) == ["79.5"]
 
 
-def test_record_count_baseline_ignores_an_unreadable_old_db(tmp_path):
-    """A corrupt old DB is what a rebuild is for: it is replaced, not used as a baseline."""
+def test_unreadable_old_file_is_only_replaced_with_force(tmp_path):
+    """A file that is not an SQLite DB may not be ours (a mistyped AH_DB_PATH): keep it."""
     db = tmp_path / "h.db"
-    db.write_bytes(b"this is not an SQLite database" * 100)
-    ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet)
+    junk = b"this is not an SQLite database" * 100
+    db.write_bytes(junk)
+    with pytest.raises(RebuildRefused, match="cannot read the current database"):
+        ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet)
+    assert db.read_bytes() == junk
+    ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet, force=True)
     assert _count(db) == 22
+
+
+# --- review of PR #20 ----------------------------------------------------------------
+
+_CRASHING_WRITER = r"""
+import os, sqlite3, sys
+c = sqlite3.connect(sys.argv[1], isolation_level=None)
+c.execute("PRAGMA cache_size=1")  # force uncommitted pages to spill into the DB file
+c.execute("PRAGMA cache_spill=1")
+c.execute("BEGIN EXCLUSIVE")
+c.execute("UPDATE t SET v = 'DIRTY' || substr(v, 6)")
+c.executemany("INSERT INTO t(v) VALUES (?)", [("x" * 500,)] * 20000)
+os._exit(0)  # crash mid-transaction: leaves a hot rollback journal
+"""
+
+
+def test_symlinked_db_path_updates_the_real_file(tmp_path):
+    real = tmp_path / "data" / "h.db"
+    ingest(_export(tmp_path / "a.zip", A), real, progress=_quiet)
+    link = tmp_path / "h.db"
+    link.symlink_to(real)
+    ingest(_export(tmp_path / "b.zip", B), link, progress=_quiet)
+    assert link.is_symlink()
+    assert _weights(real) == ["79.5"]
+
+
+def test_current_db_that_cannot_be_read_is_not_replaced_without_force(tmp_path):
+    """Fail closed: an intact DB the guard can't count (here: a hot journal) is kept."""
+    import subprocess
+    import sys
+
+    db = tmp_path / "h.db"
+    ingest(write_export(tmp_path / "big.zip", 4), db, progress=_quiet)
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT)")
+    conn.executemany("INSERT INTO t(v) VALUES (?)", [("clean" + "y" * 400,)] * 2000)
+    conn.commit()
+    conn.close()
+    subprocess.run([sys.executable, "-c", _CRASHING_WRITER, str(db)], check=True)
+    assert db.with_name(db.name + "-journal").exists()
+
+    with pytest.raises(RebuildRefused, match="--force"):
+        ingest(write_export(tmp_path / "small.zip", 1), db, progress=_quiet)
+    assert db.with_name(db.name + "-journal").exists()  # left for SQLite to recover
+    ingest(write_export(tmp_path / "small.zip", 1), db, progress=_quiet, force=True)
+    assert _count(db) == 10
+
+
+def test_failed_rename_keeps_the_old_db_and_its_side_files(tmp_path, monkeypatch):
+    db = tmp_path / "h.db"
+    ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet)
+    shm = db.with_name(db.name + "-shm")
+    shm.write_bytes(b"old side file")
+    before = db.read_bytes()
+    real_replace = os.replace
+
+    def locked(src, dst):  # Windows: the target is open in another process
+        if str(src).endswith(".building"):
+            raise PermissionError(13, "file is in use", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", locked)
+    with pytest.raises(SwapFailed, match="h.db"):
+        ingest(_export(tmp_path / "b.zip", B), db, progress=_quiet)
+    assert db.read_bytes() == before
+    assert shm.read_bytes() == b"old side file"
+    assert not list(tmp_path.glob("h.db.building*"))
+    assert not list(tmp_path.glob("*.swap"))
+
+
+def test_cli_failed_rename_blames_the_database_not_the_zip(tmp_path, monkeypatch, capsys):
+    db = tmp_path / "h.db"
+    assert main([str(_export(tmp_path / "a.zip", A)), "--db", str(db)]) == 0
+    real_replace = os.replace
+
+    def locked(src, dst):
+        if str(src).endswith(".building"):
+            raise PermissionError(13, "file is in use", str(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", locked)
+    assert main([str(_export(tmp_path / "b.zip", B)), "--db", str(db)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: cannot replace") and "b.zip" not in err

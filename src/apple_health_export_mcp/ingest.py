@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import BinaryIO
 from xml.etree import ElementTree as ET
 
-from .db import connect, connect_readonly, db_path, init_schema, remove_db_files
+from .db import connect, connect_readonly, db_path, init_schema, remove_db_files, sidecars
 
 BATCH = 10_000
 
@@ -258,8 +258,13 @@ def is_ingested(zip_path: Path, db: Path) -> bool:
 SHRINK_GUARD = 0.9
 
 
-class ShrinkRefused(Exception):
-    """The rebuilt DB is much smaller than the current one; it was not swapped in."""
+class RebuildRefused(Exception):
+    """The rebuild was not swapped in: it is much smaller than the current DB, or the
+    current DB can't be read to compare. The current DB is kept."""
+
+
+class SwapFailed(Exception):
+    """The rebuilt DB could not be renamed over the current one; the current one is kept."""
 
 
 def ingest(
@@ -271,15 +276,16 @@ def ingest(
     renamed over the old one, so rows edited or deleted on the phone disappear
     (ADR-0016). `merge=True` writes into the existing DB instead (`INSERT OR IGNORE`,
     ADR-0005), for an export that intentionally lacks older history. A rebuild with
-    under `SHRINK_GUARD` of the current record count raises `ShrinkRefused` unless
-    `force` is set.
+    under `SHRINK_GUARD` of the current record count, or over a current DB that
+    can't be read, raises `RebuildRefused` unless `force` is set.
 
     On success `meta` records the zip's digest and stat, so `--inbox` can skip a file
     that was already ingested (ADR-0015). Both are taken from the same open file that
     is parsed, so a file replaced mid-run is never marked as ingested.
     """
     zip_path = Path(zip_path).expanduser()
-    target = db or db_path()
+    # The real file: renaming over a symlink would replace the link, not the DB.
+    target = (db or db_path()).resolve()
     # Opened before the DB is touched: a missing file leaves the previous record intact.
     with open(zip_path, "rb") as fh:
         # Identity of the bytes about to be parsed, not of whatever the path holds later.
@@ -333,28 +339,54 @@ def _build(fh: BinaryIO, path: Path, zip_path: Path, source, progress) -> dict[s
 
 
 def _record_count(db: Path) -> int | None:
-    """Records in an existing DB, or None if there is none or it can't be read."""
-    try:
-        with closing(connect_readonly(db)) as conn:
-            return conn.execute("SELECT COUNT(*) FROM record").fetchone()[0]
-    except (FileNotFoundError, sqlite3.Error):  # missing, corrupt, or not ours
+    """Records in the DB at `db`, or None if there is no file. Raises sqlite3.Error if
+    it exists but can't be read (corrupt, locked, a hot journal, not an SQLite file)."""
+    if not db.exists():
         return None
+    with closing(connect_readonly(db)) as conn:
+        return conn.execute("SELECT COUNT(*) FROM record").fetchone()[0]
 
 
 def _swap(building: Path, target: Path, force: bool, progress) -> None:
-    """Rename the finished rebuild over `target`, unless it shrank past the guard."""
-    old, new = _record_count(target), _record_count(building) or 0
-    if not force and old and new < SHRINK_GUARD * old:
-        raise ShrinkRefused(
-            f"the new export has {new:,} records, the current database {old:,}; "
-            f"kept the current one (the rebuild is at {building}). "
-            "Re-run with --merge to add this export to it, or --force to replace it anyway."
-        )
+    """Rename the finished rebuild over `target`, unless the guard refuses it."""
+    if not force:
+        try:
+            old = _record_count(target)
+        except sqlite3.Error as e:  # fail closed: it may be intact, or not even ours
+            raise RebuildRefused(
+                f"cannot read the current database {target} to compare ({e}); kept it "
+                f"(the rebuild is at {building}). Re-run with --force to replace it anyway."
+            ) from None
+        new = _record_count(building) or 0
+        if old and new < SHRINK_GUARD * old:
+            raise RebuildRefused(
+                f"the new export has {new:,} records, the current database {old:,}; "
+                f"kept the current one (the rebuild is at {building}). "
+                "Re-run with --merge to add this export to it, or --force to replace it anyway."
+            )
     # The old DB's journal files must not outlive it: next to the new file SQLite would
-    # replay a stale -wal or roll back a hot -journal onto it. The writer lock rules out
-    # another ingest; read-only readers keep their open handles to the old inode.
-    remove_db_files(target, main=False)
-    os.replace(building, target)
+    # replay a stale -wal or roll back a hot -journal onto it. They are moved aside, not
+    # deleted, so a failed rename can put the old DB back exactly as it was. The writer
+    # lock rules out another ingest; read-only readers keep their open handles.
+    aside: list[tuple[Path, Path]] = []
+    try:
+        for f in sidecars(target):
+            if f.exists():
+                parked = f.with_name(f.name + ".swap")
+                os.replace(f, parked)
+                aside.append((parked, f))
+        os.replace(building, target)
+    except OSError as e:
+        for parked, f in aside:
+            with suppress(OSError):
+                os.replace(parked, f)
+        remove_db_files(building)
+        raise SwapFailed(
+            f"cannot replace {target}: {e.strerror or e}. Is another program (e.g. the MCP "
+            "server on Windows) holding it open? Kept the current database."
+        ) from None
+    for parked, _ in aside:
+        parked.unlink(missing_ok=True)
     progress(f"Replaced {target} with the rebuilt database")
 
 
