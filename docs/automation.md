@@ -56,13 +56,16 @@ what belongs in the vault. They are also created owner-only.
    /Users/you/Library/Mobile Documents/com~apple~CloudDocs/HealthInbox
    ```
 
-   Right-click the folder and choose **Keep Downloaded** (macOS 14 and later). Without it,
-   iCloud may keep a new export only in the cloud, and the ingest then waits for the
-   download (see [Gotchas](#gotchas)).
+   Make sure new exports are stored on the Mac, not only in the cloud. On macOS 15
+   (Sequoia) and later, right-click the folder and choose **Keep Downloaded**. On older
+   macOS, turn off *Optimize Mac Storage* (*System Settings → your Apple Account → iCloud
+   → iCloud Drive*). Otherwise the ingest waits for the download (see [Gotchas](#gotchas)).
 
 3. **Pick the vault folder** for the notes, e.g. `/Users/you/Documents/Vault/Health`.
    An Obsidian vault kept in iCloud lives under
    `/Users/you/Library/Mobile Documents/iCloud~md~obsidian/Documents/<Vault>/`.
+   `Documents` and iCloud Drive are privacy-protected folders. A background job writing
+   there may need the permission described under [Gotchas](#gotchas).
 
 ## Every week on the iPhone
 
@@ -178,12 +181,14 @@ plutil -lint ~/Library/LaunchAgents/local.apple-health.*.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.apple-health.ingest.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.apple-health.report.plist
 
-# Run either one now, without waiting for its trigger.
-launchctl kickstart -k gui/$(id -u)/local.apple-health.ingest
-launchctl kickstart -k gui/$(id -u)/local.apple-health.report
+# Run either one now, without waiting for its trigger. (Plain kickstart: with -k it
+# would first kill a run in progress, e.g. an ingest of a large export.)
+launchctl kickstart gui/$(id -u)/local.apple-health.ingest
+launchctl kickstart gui/$(id -u)/local.apple-health.report
 
-# See what happened: the log, and the last exit code.
+# See what happened: the logs, and the last exit code.
 tail -n 20 ~/Library/Logs/apple-health-ingest.log
+tail -n 20 ~/Library/Logs/apple-health-report.log
 launchctl print gui/$(id -u)/local.apple-health.ingest | grep -E "last exit code|runs"
 
 # After editing a plist: unload, then load again.
@@ -209,39 +214,67 @@ What the ingest log lines mean:
 ## Check that it works
 
 1. Load both agents, then save an export into `HealthInbox` (or copy one there in Finder).
-2. Within a few seconds of the copy finishing, the ingest log should end with `Done: …`.
-3. Run `launchctl kickstart -k gui/$(id -u)/local.apple-health.report`. The report log
-   then shows `Wrote …/2026-Www.md`, and the note appears in your vault.
+2. Once the copy has finished and the ingest ran (a real export takes a few minutes), the
+   ingest log contains `Done: …`. Lines after it are normal: `--keep 1` deleting the
+   previous export triggers another run, which logs `Nothing new: … is already ingested.`
+3. Run `launchctl kickstart gui/$(id -u)/local.apple-health.report`. The report log then
+   shows `Wrote …/2026-Www.md`, and the note appears in your vault.
 
-To try it without real data, generate a synthetic export from a checkout of this
-repository with `uv run python tests/fixtures/synthetic.py /tmp/export.zip 14`, and point
-`AH_DB_PATH` and `--out` at scratch locations first.
+To try the pipeline without real data, use **scratch copies of both plists**, with a
+different `Label` (e.g. `local.apple-health-test.ingest`), and a scratch folder for the
+inbox (`--inbox` and `WatchPaths`), `AH_DB_PATH` and `--out`. Do not point a test at the
+real `HealthInbox`: with `--keep 1`, a synthetic zip there becomes the newest export, and
+the real one is deleted. From a checkout of this repository,
+`uv run python tests/fixtures/synthetic.py /tmp/export.zip 14` writes a 14-day export
+starting 2026-10-01. Its data falls in October 2026, so test the report with
+`--week-of 2026-10-05`, not the default last week (which would be all `null`).
 
 ## Optional: coaching commentary from Claude
 
 The report is plain numbers. To add written commentary, a third step can ask Claude
-Code to run the `weekly_review` coaching prompt over the same database and append the
-answer to the note. This needs Claude Code installed with the MCP server configured
-(see the [README](../README.md#setup)), and every run uses tokens. It is not part of the
-tested setup above. Treat it as a starting point:
+Code for a review of the same week and append the answer to the note. This needs Claude
+Code installed, and every run uses tokens. It is not part of the tested setup above, so
+treat it as a starting point.
 
-```bash
-claude -p "Use the apple-health MCP tools to review last week like the weekly_review \
-prompt does, then append the review under a '## Review' heading to \
-/Users/you/Documents/Vault/Health/<week>.md" \
-  --allowedTools "mcp__apple-health" "Edit"
+Claude only gets this server's read-only tools. Its answer goes to standard output, and
+the shell appends it to the note, so no file-edit permission is needed. Put the server
+in its own config file (`/Users/you/.config/apple-health.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "apple-health": {
+      "command": "/Users/you/.local/bin/apple-health-export-mcp",
+      "env": { "AH_DB_PATH": "/Users/you/.local/share/apple-health-export-mcp/health.db" }
+    }
+  }
+}
 ```
 
-Keep the numbers in the generated note, and put commentary or your own notes under a
-separate heading or in a separate note: rerunning the report overwrites the file.
+Then, after the report has been written (e.g. as a second command run from the report
+agent through `/bin/sh -c`):
+
+```bash
+week=$(date -v-7d +%G-W%V)  # last week's ISO week, the note the report just wrote
+{ printf '\n## Review\n\n'
+  claude -p "Review the calendar week ${week} as the apple-health weekly_review prompt does." \
+    --mcp-config /Users/you/.config/apple-health.mcp.json --strict-mcp-config \
+    --allowedTools "mcp__apple-health"
+} >> "/Users/you/Documents/Vault/Health/${week}.md"
+```
+
+The report overwrites the note whenever its numbers change, and that drops the appended
+review. Keep anything you want to keep, such as commentary or your own notes, in a
+separate note.
 
 ## Gotchas
 
 - **An export still in iCloud.** On macOS 13 and earlier, an export that is still only in
-  the cloud shows up as a hidden `.export.zip.icloud` placeholder, and ingest waits.
-  From macOS 14 the file keeps its own name, and the first read downloads it, so the
-  ingest simply takes longer. *Keep Downloaded* on the folder avoids both. Opening the
-  file in Finder also downloads it.
+  the cloud shows up as a hidden `.export.zip.icloud` placeholder, and ingest waits
+  (`Not ready: … not downloaded yet`). From macOS 14 the file keeps its own name, and the
+  first read downloads it, so the ingest simply takes longer. To keep exports on the
+  Mac, use *Keep Downloaded* on the folder (macOS 15 and later) or turn off *Optimize Mac
+  Storage* (older macOS). Opening the file in Finder downloads it once.
 - **"Operation not permitted" in the log.** macOS privacy controls (TCC) can block a
   background job from reading iCloud Drive or Documents. Grant **Full Disk Access**
   (*System Settings → Privacy & Security*) to the Python interpreter the tool runs with.
