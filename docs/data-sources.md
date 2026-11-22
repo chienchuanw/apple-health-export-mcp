@@ -27,7 +27,8 @@ health data while a device is locked"
 own docs say: "Allowing a shortcut to run while locked does not allow it to read locked
 health data"
 ([HAE: schedule with Shortcuts](https://help.healthyapps.dev/en/health-auto-export/automations/schedule-automations-using-shortcuts)).
-Shortcuts reports the same failure as "Protected health data is inaccessible"
+A shortcut reading workouts through the third-party Toolbox Pro action reported the
+same failure as "Protected health data is inaccessible"
 ([Automators forum](https://talk.automators.fm/t/get-workouts-from-health-not-working-when-iphone-locked/13100)).
 
 A weekly run can start on its own, but it only gets data if the phone happens to be
@@ -45,17 +46,21 @@ you are holding the unlocked phone.
 2. **Coverage.** Quantity and category samples, including steps, heart rate, HRV, resting
    HR, body mass and sleep. Each sample has type, value, unit, start/end date, duration
    and source ([Get Details of Health Sample](https://matthewcassinelli.com/actions/get-details-of-health-sample/)).
-   **Workouts are not available.** There is no native workout action; third-party add-ons
-   (e.g. Toolbox Pro) are needed and still cannot attach heart rate to a workout
+   **Workouts are not available.** Shortcuts can start and end a workout, but has no
+   action that reads past workouts. Third-party add-ons (e.g. Toolbox Pro) are needed and
+   still cannot attach heart rate to a workout
    ([MPU forum](https://talk.macpowerusers.com/t/struggling-to-extract-workout-data-from-watch-via-shortcuts/39152)).
+   That rests on one community thread, so it is the first thing a device test should
+   confirm.
    How sleep stages are labelled is unverified.
 3. **Granularity.** Raw samples by default, with optional grouping
    ([Find Health Samples](https://matthewcassinelli.com/actions/find-health-samples/)). A
    week of heart-rate samples may be slow to loop over, which is unverified.
 4. **Timestamps.** Date objects: the shortcut has to format them (e.g. ISO 8601). Whether
    the offset is kept depends on that formatting, which is unverified.
-5. **Identifiers.** Localized display names ("Steps"), not HealthKit identifiers, so the
-   output depends on the phone's language.
+5. **Identifiers.** Unverified. The action's documentation lists a *Type* and a *Name*
+   field but not what the strings look like. They are likely display names rather than
+   HealthKit identifiers, and may follow the phone's language.
 6. **Incremental.** A rolling date filter ("in the last 7 days"). There is no "since the
    last run".
 7. **Cost, privacy, maintenance.** Free, and the file goes straight to iCloud Drive. But
@@ -72,16 +77,21 @@ you are holding the unlocked phone.
    device is unlocked". It also needs Background App Refresh on and Low Power Mode off.
 2. **Coverage.** Steps, heart rate, resting HR, HRV (SDNN), body mass and sleep analysis
    ([supported data](https://help.healthyapps.dev/en/health-auto-export/getting-started/supported-data)).
-   Sleep stages are labelled Core / Deep / REM / Awake / In Bed. Workouts (format v2)
+   Sleep stages are labelled Core / Deep / REM / Awake / In Bed per segment, but only with
+   *Summarize Data* off. Summarized, sleep is a per-day total split into `core` / `deep` /
+   `rem` ([health metrics](https://help.healthyapps.dev/en/health-auto-export/export-format/health-metrics)). Workouts (format v2)
    include duration, distance, active energy, average and maximum heart rate, per-workout
    heart-rate data, and the source
    ([workouts format](https://help.healthyapps.dev/en/health-auto-export/export-format/workouts)).
-   Per-sample `source` is present "when available"; device names need a setting
+   Per-sample `source` is present "when available". App and device names need the
+   *Enable iOS 27 Sources* setting, which the docs warn may stall exports before iOS 27.2
    ([source preferences](https://help.healthyapps.dev/en/health-auto-export/getting-started/source-preferences)).
 3. **Granularity.** Summarized by default (seconds to years). With *Summarize Data* off,
    it exports individual readings "where available". That is documented for sleep
-   segments and HRV, but **not confirmed for steps or heart rate**. CSV output is always
-   summarized ([iCloud Drive automations](https://help.healthyapps.dev/en/health-auto-export/automations/icloud-drive)).
+   segments and HRV, but **not confirmed for steps or heart rate**. Heart rate is
+   documented as `Min` / `Avg` / `Max` per entry ([health metrics](https://help.healthyapps.dev/en/health-auto-export/export-format/health-metrics)), which suggests
+   it arrives aggregated even per reading, while `record.value` holds one value. CSV
+   output is always summarized ([iCloud Drive automations](https://help.healthyapps.dev/en/health-auto-export/automations/icloud-drive)).
    The docs do not say how summarized totals treat parallel sources (Watch + iPhone).
 4. **Timestamps.** `yyyy-MM-dd HH:mm:ss Z`, e.g. `2024-02-06 14:30:00 -0800`: local time
    with offset, the same shape as `export.xml`
@@ -90,7 +100,8 @@ you are holding the unlocked phone.
    HealthKit identifiers
    ([health metrics](https://help.healthyapps.dev/en/health-auto-export/export-format/health-metrics)).
 6. **Incremental.** iCloud Drive automations export a fixed period (day, week, month,
-   year). "Since last sync" exists only for the REST, MQTT and email targets. Whether a
+   year). "Since last sync" is documented for the REST API target. Whether the MQTT
+   and email targets have it is unverified. Whether a
    run overwrites or appends its file is not documented.
 7. **Cost, privacy, maintenance.** Automations need the paid Premium tier (per its pricing
    page at the time of writing,
@@ -117,10 +128,10 @@ Shape of its JSON (from the format docs; values are placeholders):
 | ------------------------------------------- | ------------------ | ------------------- | ---------------------------------- |
 | Runs without you                            | no (manual)        | only if unlocked    | only if unlocked                   |
 | Workouts with statistics (ADR-0011)         | yes                | **no**              | yes                                |
-| Sleep stages                                | yes                | unverified labels   | yes                                |
+| Sleep stages                                | yes                | unverified labels   | yes, with Summarize Data off       |
 | Raw samples, per source (dedupe, ADR-0010)  | yes                | yes                 | sleep/HRV yes; steps/HR unverified |
 | Local time + offset (ADR-0009)              | yes                | if formatted so     | yes                                |
-| HealthKit identifiers (ADR-0004)            | yes                | no (localized)      | no (snake_case, mappable)          |
+| HealthKit identifiers (ADR-0004)            | yes                | unverified          | no (snake_case, mappable)          |
 | Full history vs window                      | full snapshot      | rolling window      | fixed window                       |
 | Cost                                        | free               | free                | paid tier for automations          |
 | Format you depend on                        | Apple's            | your own shortcut   | documented, versioned              |
@@ -131,9 +142,11 @@ Shape of its JSON (from the format docs; values are placeholders):
   would own a fragile custom format.
 - **Health Auto Export: not now; maybe later as a top-up importer, not a replacement.**
   It would need four things. First, a name-to-identifier map (`step_count` →
-  `HKQuantityTypeIdentifierStepCount`). Second, a merge into the existing DB, because
-  its weekly windows overlap and it is not a full snapshot, so the rebuild of ADR-0016
-  cannot apply. Third, an occasional full `export.xml` to fill gaps from missed runs.
+  `HKQuantityTypeIdentifierStepCount`). Second, a merge into the existing DB:
+  a window is not a full snapshot, so a rebuild from it (ADR-0016) would drop all older
+  history. The adapter must also leave the `export.zip` ingest record (ADR-0015) alone,
+  or the next `--inbox` run would rebuild from the last export and drop the top-up rows.
+  Third, an occasional full `export.xml` to fill gaps from missed runs.
   Fourth, and most important, raw per-source steps: if steps only arrive summarized,
   the per-day dominant-source dedupe cannot run, and totals would follow whatever the
   app's summarizing does.
@@ -144,13 +157,19 @@ Shape of its JSON (from the format docs; values are placeholders):
 ## What a device test would need to answer
 
 1. With *Summarize Data* off, are steps and heart rate raw samples per source, or already
-   merged statistics?
+   merged statistics (heart rate is documented as `Min` / `Avg` / `Max`)?
 2. Does an iCloud Drive automation set to *Week* overwrite one file or write a new one per
    run, and with what file name?
 3. How often does a weekly run that fires while the phone is unlocked (e.g. on charger
    connect at a usual time) actually succeed?
-4. Are the `source` values the same device names as `export.xml`'s `sourceName`?
+4. Are the `source` values the same device names as `export.xml`'s `sourceName`, and do
+   values and units format the same way? Under `--merge` the content key (ADR-0005) only
+   dedupes byte-identical rows, so any difference double-counts overlapping samples.
 5. Do workout totals match `export.xml`'s `WorkoutStatistics` for the same workout?
+6. On current iOS, can Shortcuts' *Find Health Samples* return workouts, and what strings
+   does it use for sample types?
+
+These are tracked in [#24](https://github.com/chienchuanw/apple-health-export-mcp/issues/24).
 
 If those answers come back favourable, the follow-up is a separate adapter (e.g.
 `ingest_hae.py`) that maps into the existing `record` / `workout` / `workout_stat`
