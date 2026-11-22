@@ -166,8 +166,10 @@ It is safe to run as often as you like, e.g. from a file watcher. Each run:
 
 - picks the newest `*.zip` in the folder (hidden files, i.e. partial copies, are ignored);
 - **does nothing (exit 0)** when that file is not ready: still only an iCloud placeholder
-  (`.export.zip.icloud`), still being copied (its size changed within `--settle` seconds,
-  default 2), or not a complete zip yet;
+  (`.export.zip.icloud`, macOS 13 and earlier), still being copied (its size changed within
+  `--settle` seconds, default 2), or not a complete zip yet. On macOS 14 and later iCloud
+  keeps an evicted file under its own name, and reading it downloads it first, so the run
+  waits for the download. Set the folder to *Keep Downloaded* in Finder to avoid the wait;
 - **does nothing (exit 0)** when that exact file was already ingested: the last successful
   ingest records the zip's SHA-256 (a manual `apple-health-export-mcp-ingest <zip>` counts too);
 - otherwise ingests it, and with `--keep N` then deletes all but the newest N zips.
