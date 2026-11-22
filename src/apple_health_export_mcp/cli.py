@@ -13,11 +13,49 @@ import argparse
 import os
 import sqlite3
 import sys
+import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
-from . import report
+from . import inbox, report
 from .db import connect_readonly, db_path
 from .ingest import ingest
+
+
+def _ingest_one(zip_path: Path, db: Path | None, dest: Path, digest: str | None = None) -> int:
+    if not zip_path.expanduser().exists():
+        print(f"error: no such file: {zip_path}", file=sys.stderr)
+        return 1
+    print(f"Ingesting {zip_path} → {dest}")
+    try:
+        counts = ingest(zip_path, db, digest=digest)
+    except (ValueError, zipfile.BadZipFile, ET.ParseError, sqlite3.Error, OSError) as e:
+        print(f"error: cannot ingest {zip_path}: {e}", file=sys.stderr)
+        return 1
+    print(
+        f"Done: {counts['record']:,} records, {counts['workout']:,} workouts "
+        f"({counts['workout_stat']:,} workout statistics) → {dest}"
+    )
+    return 0
+
+
+def _ingest_inbox(box: Path, db: Path | None, dest: Path, keep: int | None, settle: float) -> int:
+    try:
+        path, why = inbox.pick(box, settle=settle)
+        if path is None:
+            print(f"Not ready: {why}.")
+            return 0
+        digest = inbox.sha256(path)
+        if digest == inbox.ingested_sha256(dest):
+            print(f"Nothing new: {path.name} is already ingested.")
+        elif rc := _ingest_one(path, db, dest, digest):
+            return rc  # a failed ingest prunes nothing
+        for old in inbox.prune(box, keep) if keep else ():
+            print(f"Removed older export {old.name}")
+    except (OSError, sqlite3.Error) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -25,21 +63,37 @@ def main(argv: list[str] | None = None) -> int:
         prog="apple-health-export-mcp-ingest",
         description="Parse an Apple Health export.zip into SQLite.",
     )
-    parser.add_argument("zip", type=Path, help="Path to the exported export.zip")
+    parser.add_argument("zip", type=Path, nargs="?", help="Path to the exported export.zip")
     parser.add_argument("--db", type=Path, default=None, help="DB path (default: $AH_DB_PATH or XDG).")
-    args = parser.parse_args(argv)
-
-    if not args.zip.expanduser().exists():
-        print(f"error: no such file: {args.zip}", file=sys.stderr)
-        return 1
-    dest = args.db or db_path()
-    print(f"Ingesting {args.zip} → {dest}")
-    counts = ingest(args.zip, args.db)
-    print(
-        f"Done: {counts['record']:,} records, {counts['workout']:,} workouts "
-        f"({counts['workout_stat']:,} workout statistics) → {dest}"
+    parser.add_argument(
+        "--inbox",
+        type=Path,
+        help="Drop folder instead of a zip: ingest its newest complete *.zip unless already ingested.",
     )
-    return 0
+    parser.add_argument("--keep", type=int, help="With --inbox: after success, delete all but the newest N zips.")
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=2.0,
+        help="With --inbox: seconds a file must stay unchanged to count as copied (default 2).",
+    )
+    args = parser.parse_args(argv)
+    if (args.zip is None) == (args.inbox is None):
+        parser.error("pass either an export.zip or --inbox DIR")
+    if args.keep is not None and (args.inbox is None or args.keep < 1):
+        parser.error("--keep N needs --inbox and N >= 1")
+
+    dest = args.db or db_path()
+    with inbox.lock(dest) as acquired:
+        if not acquired:
+            if args.inbox:  # a watcher fired again while we were busy: not an error
+                print("Another ingest is already running; skipping.")
+                return 0
+            print("error: another ingest is already running", file=sys.stderr)
+            return 1
+        if args.inbox:
+            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, args.keep, args.settle)
+        return _ingest_one(args.zip, args.db, dest)
 
 
 def report_main(argv: list[str] | None = None) -> int:

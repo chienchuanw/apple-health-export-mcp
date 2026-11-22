@@ -19,6 +19,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from .db import connect, init_schema
+from .inbox import sha256
 
 BATCH = 10_000
 
@@ -206,7 +207,13 @@ _STAT_SQL = (
 _SQL = {"record": _REC_SQL, "workout": _WK_SQL, "workout_stat": _STAT_SQL}
 
 
-def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[str, int]:
+def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: str | None = None) -> dict[str, int]:
+    """Parse `zip_path` into the DB; return row counts per table.
+
+    On success, `meta.source_sha256` holds the zip's digest (`digest` if the caller
+    already hashed it), so `--inbox` can skip a file that was already ingested. It is
+    cleared first, so a failed run never marks any file as done.
+    """
     zip_path = Path(zip_path).expanduser()
     conn = connect(db, create=True)
     init_schema(conn)
@@ -219,6 +226,7 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
     # Commit right away so the -wal file exists for the whole ingest: connect_readonly
     # reads "no -wal" as "no writer" and may then open the DB immutable.
     conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
+    conn.execute("DELETE FROM meta WHERE k='source_sha256'")
     conn.commit()
 
     counts = dict.fromkeys(_SQL, 0)
@@ -242,6 +250,8 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
                     flush()
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
+    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_sha256',?)", (digest or sha256(zip_path),))
+    conn.commit()
     conn.execute("PRAGMA synchronous=NORMAL")
     # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
     # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
