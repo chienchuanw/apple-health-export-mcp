@@ -166,7 +166,9 @@ Shape of its JSON (from the format docs; values are placeholders):
    start and end dates, values and units format the same way? HAE documents a single
    `date` per sample. Under `--merge` the content key (ADR-0005) hashes type, source,
    start, end, value and unit, so any difference stores an overlapping sample twice.
-5. Do workout totals match `export.xml`'s `WorkoutStatistics` for the same workout?
+5. Do workout totals match `export.xml`'s `WorkoutStatistics` for the same workout? A
+   workout's key includes its raw `duration` string, which `export.xml` gives in minutes
+   and HAE in seconds, so a mapping must convert it, or overlapping workouts duplicate.
 6. On current iOS, can Shortcuts' *Find Health Samples* return workouts, and what strings
    does it use for sample types?
 
