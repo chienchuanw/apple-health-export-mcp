@@ -32,8 +32,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    # changes (workout statistics, read-only server, private DB file, query_sql).
    ```
 
-   This puts two commands on your PATH: `apple-health-export-mcp` (the server) and
-   `apple-health-export-mcp-ingest`.
+   This puts three commands on your PATH: `apple-health-export-mcp` (the server),
+   `apple-health-export-mcp-ingest` and `apple-health-export-mcp-report` (see
+   [Weekly report](#weekly-report)).
 
 3. **Ingest** the archive (one time per new export):
 
@@ -148,6 +149,48 @@ Reusable coaching workflows the client can invoke (they orchestrate the tools an
 | `sleep_report(start?, end?)` | Sleep duration, stages, consistency                |
 
 Arguments are optional — they default to today / this week / this month / this year.
+
+## Weekly report
+
+`apple-health-export-mcp-report` writes one Monday–Sunday week as a Markdown note,
+for a notes vault such as Obsidian. No MCP client or LLM is involved: the numbers come
+from the same aggregates the tools return, and the same data always gives the same file.
+
+```bash
+apple-health-export-mcp-report --out ~/Vault/Health                 # last completed week
+apple-health-export-mcp-report --week-of 2026-11-18 --out ~/Vault/Health
+apple-health-export-mcp-report --week 2026-W47 --out ~/Vault/Health  # ISO week
+```
+
+It writes `<out>/2026-W47.md` (the folder is created if missing; `AH_REPORT_DIR` can
+replace `--out`, and `--db` / `AH_DB_PATH` pick the database as for ingest). The YAML
+frontmatter holds the week's numbers, for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/)
+queries across weeks:
+
+```yaml
+week: 2026-W47
+start: 2026-11-16
+end: 2026-11-22
+steps_total: 61234          # per-day sums, deduplicated across devices
+steps_daily_avg: 8748       # over the days that have step data
+active_kcal_total: 3410
+resting_hr_avg: 54
+hrv_avg: 48.5
+sleep_asleep_avg_min: 412   # over nights with sleep data
+sleep_nights: 7
+workouts_count: 4
+workout_min_total: 185
+workout_km_total: 24.3
+workout_kcal_total: 1520
+```
+
+The body has a per-day table and a per-activity workout table. A metric with no data
+this week is `null`, never `0`. The note is regenerated output, so rerunning overwrites
+it. Keep your own notes in a separate file. A rerun on unchanged data leaves the
+file untouched, so vault sync has nothing to upload.
+
+> **Privacy:** the note contains your health aggregates. If the vault syncs (Obsidian
+> Sync, iCloud, git), so does the report. Keep `export.zip` and `health.db` outside it.
 
 ## Development
 
