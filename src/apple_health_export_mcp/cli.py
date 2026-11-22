@@ -14,6 +14,8 @@ import os
 import sqlite3
 import sys
 import zipfile
+import zlib
+from contextlib import ExitStack
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -21,12 +23,16 @@ from . import inbox, report
 from .db import CAN_LOCK, connect_readonly, db_path, writer_lock
 from .ingest import ingest, is_ingested
 
+# What a broken or truncated export can raise mid-parse: a bad zip directory or CRC,
+# a corrupt deflate stream (zlib.error), a member cut short (EOFError), bad XML.
+_EXPORT_ERRORS = (ValueError, zipfile.BadZipFile, zlib.error, EOFError, ET.ParseError, sqlite3.Error, OSError)
 
-def _ingest_one(zip_path: Path, db: Path | None, dest: Path, digest: str | None = None) -> int:
+
+def _ingest_one(zip_path: Path, db: Path | None, dest: Path) -> int:
     print(f"Ingesting {zip_path} → {dest}")
     try:
-        counts = ingest(zip_path, db, digest=digest)
-    except (ValueError, zipfile.BadZipFile, ET.ParseError, sqlite3.Error, OSError) as e:
+        counts = ingest(zip_path, db)
+    except _EXPORT_ERRORS as e:
         print(f"error: cannot ingest {zip_path}: {e}", file=sys.stderr)
         return 1
     print(
@@ -42,10 +48,9 @@ def _ingest_inbox(box: Path, db: Path | None, dest: Path, keep: int | None, sett
         if path is None:
             print(f"Not ready: {why}.")
             return 0
-        done, digest = is_ingested(path, dest)
-        if done:
+        if is_ingested(path, dest):
             print(f"Nothing new: {path.name} is already ingested.")
-        elif rc := _ingest_one(path, db, dest, digest):
+        elif rc := _ingest_one(path, db, dest):
             return rc  # a failed ingest prunes nothing
         if keep:
             for old in inbox.prune(box, keep):
@@ -72,7 +77,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--settle",
         type=float,
-        default=2.0,
         help="With --inbox: seconds a file must stay unchanged to count as copied (default 2).",
     )
     args = parser.parse_args(argv)
@@ -80,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("pass either an export.zip or --inbox DIR")
     if args.keep is not None and (args.inbox is None or args.keep < 1):
         parser.error("--keep N needs --inbox and N >= 1")
+    if args.settle is not None and (args.inbox is None or args.settle < 0):
+        parser.error("--settle S needs --inbox and S >= 0")
 
     if args.zip is not None and not args.zip.expanduser().exists():
         print(f"error: no such file: {args.zip}", file=sys.stderr)
@@ -87,7 +93,12 @@ def main(argv: list[str] | None = None) -> int:
     if not CAN_LOCK:
         print("warning: no file locking on this platform; run one ingest at a time", file=sys.stderr)
     dest = args.db or db_path()
-    with writer_lock(dest) as acquired:
+    with ExitStack() as stack:
+        try:
+            acquired = stack.enter_context(writer_lock(dest))
+        except OSError as e:  # e.g. the DB folder cannot be created
+            print(f"error: cannot lock {dest}: {e}", file=sys.stderr)
+            return 1
         if not acquired:
             if args.inbox:  # a watcher fired again while we were busy: not an error
                 print("Another ingest is already running; skipping.")
@@ -95,7 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             print("error: another ingest is already running", file=sys.stderr)
             return 1
         if args.inbox:
-            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, args.keep, args.settle)
+            settle = 2.0 if args.settle is None else args.settle
+            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, args.keep, settle)
         return _ingest_one(args.zip, args.db, dest)
 
 

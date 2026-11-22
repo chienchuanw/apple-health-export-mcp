@@ -1,6 +1,5 @@
 """Inbox mode: pick the newest complete export from a drop folder, skip what was ingested."""
 
-import fcntl
 import os
 import sqlite3
 import zipfile
@@ -11,7 +10,7 @@ from fixtures.synthetic import write_export
 
 from apple_health_export_mcp import inbox
 from apple_health_export_mcp.cli import main
-from apple_health_export_mcp.ingest import ingest, is_ingested, sha256
+from apple_health_export_mcp.ingest import ingest, is_ingested
 
 
 def _meta(db, k):
@@ -33,6 +32,31 @@ def _run(box, db, *extra):
     return main(["--inbox", str(box), "--db", str(db), "--settle", "0", *extra])
 
 
+def _flock(path):
+    """Hold the writer lock from the test, as a concurrent ingest would."""
+    fcntl = pytest.importorskip("fcntl")  # POSIX only, like db.writer_lock
+    f = open(path, "w")
+    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    return f
+
+
+def _corrupt_deflate(path):
+    """Overwrite the first byte of export.xml's deflate data with a reserved block type.
+
+    The zip directory stays intact (is_zipfile is still True), and every zlib
+    version rejects the stream at the first byte with zlib.error.
+    """
+    with zipfile.ZipFile(path) as zf:
+        info = zf.getinfo("apple_health_export/export.xml")
+    raw = bytearray(path.read_bytes())
+    name_len, extra_len = (
+        int.from_bytes(raw[info.header_offset + 26 : info.header_offset + 28], "little"),
+        int.from_bytes(raw[info.header_offset + 28 : info.header_offset + 30], "little"),
+    )
+    raw[info.header_offset + 30 + name_len + extra_len] = 0xFF
+    path.write_bytes(bytes(raw))
+
+
 @pytest.fixture
 def box(tmp_path):
     d = tmp_path / "HealthInbox"
@@ -46,28 +70,28 @@ def box(tmp_path):
 def test_ingest_records_the_zip_digest(tmp_path):
     z = write_export(tmp_path / "export.zip", 1)
     ingest(z, tmp_path / "h.db", progress=lambda *_: None)
-    assert is_ingested(z, tmp_path / "h.db") == (True, sha256(z))
+    assert is_ingested(z, tmp_path / "h.db")
 
 
 def test_unchanged_file_is_recognized_without_hashing_it(tmp_path, monkeypatch):
     z = write_export(tmp_path / "export.zip", 1)
     ingest(z, tmp_path / "h.db", progress=lambda *_: None)
     monkeypatch.setattr("apple_health_export_mcp.ingest.sha256", lambda _: pytest.fail("re-hashed"))
-    assert is_ingested(z, tmp_path / "h.db")[0]
+    assert is_ingested(z, tmp_path / "h.db")
 
 
 def test_same_content_with_a_new_mtime_is_still_ingested(tmp_path):
     z = write_export(tmp_path / "export.zip", 1)
     ingest(z, tmp_path / "h.db", progress=lambda *_: None)
     os.utime(z, (9_000, 9_000))  # e.g. iCloud re-downloaded the same file
-    assert is_ingested(z, tmp_path / "h.db") == (True, sha256(z))
+    assert is_ingested(z, tmp_path / "h.db")
 
 
 def test_different_content_is_not_ingested(tmp_path):
     z = write_export(tmp_path / "export.zip", 1)
     ingest(z, tmp_path / "h.db", progress=lambda *_: None)
     other = write_export(tmp_path / "other.zip", 2)
-    assert is_ingested(other, tmp_path / "h.db") == (False, sha256(other))
+    assert not is_ingested(other, tmp_path / "h.db")
 
 
 def test_failed_ingest_leaves_no_digest(tmp_path):
@@ -80,7 +104,7 @@ def test_failed_ingest_leaves_no_digest(tmp_path):
     with pytest.raises(ET.ParseError):
         ingest(bad, db, progress=lambda *_: None)
     # The previous digest is gone too: a retry of either file must ingest again.
-    assert not is_ingested(ok, db)[0]
+    assert not is_ingested(ok, db)
     assert _meta(db, "source_sha256") is None and _meta(db, "source_stat") is None
 
 
@@ -212,8 +236,7 @@ def test_keep_does_not_prune_when_the_ingest_fails(box, tmp_path):
 def test_concurrent_run_exits_zero_without_ingesting(box, tmp_path, capsys):
     _zip(box / "export.zip", 1, 1_000)
     db = tmp_path / "h.db"
-    with open(tmp_path / "h.db.lock", "w") as held:
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with _flock(tmp_path / "h.db.lock"):
         assert _run(box, db) == 0
     assert "already running" in capsys.readouterr().out.lower()
     assert not db.exists()
@@ -221,8 +244,7 @@ def test_concurrent_run_exits_zero_without_ingesting(box, tmp_path, capsys):
 
 def test_manual_ingest_refuses_to_run_concurrently(tmp_path, capsys):
     z = write_export(tmp_path / "export.zip", 1)
-    with open(tmp_path / "h.db.lock", "w") as held:
-        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with _flock(tmp_path / "h.db.lock"):
         assert main([str(z), "--db", str(tmp_path / "h.db")]) == 1
     assert "already running" in capsys.readouterr().err
 
@@ -234,6 +256,8 @@ def test_manual_ingest_refuses_to_run_concurrently(tmp_path, capsys):
         ["export.zip", "--inbox", "dir"],  # both
         ["export.zip", "--keep", "1"],  # --keep needs --inbox
         ["--inbox", "dir", "--keep", "0"],  # keep at least the newest
+        ["export.zip", "--settle", "5"],  # --settle needs --inbox
+        ["--inbox", "dir", "--settle", "-1"],  # no negative wait
     ],
 )
 def test_bad_argument_combinations_are_usage_errors(argv):
@@ -245,3 +269,72 @@ def test_bad_argument_combinations_are_usage_errors(argv):
 def test_missing_inbox_folder_is_an_error(tmp_path, capsys):
     assert _run(tmp_path / "nope", tmp_path / "h.db") == 1
     assert capsys.readouterr().err.startswith("error:")
+
+
+# --- review of PR #19 ----------------------------------------------------------------
+
+
+def test_file_replaced_during_ingest_is_not_marked_ingested(tmp_path):
+    """The recorded stat and digest describe the bytes that were parsed, not the path later."""
+    z = write_export(tmp_path / "export.zip", 1)
+    newer = write_export(tmp_path / "newer.zip", 3)
+
+    def swap(msg):
+        if msg.startswith("Reading"):
+            os.replace(newer, z)  # a new export lands while the old one is parsed
+
+    ingest(z, tmp_path / "h.db", progress=swap)
+    assert not is_ingested(z, tmp_path / "h.db")
+
+
+def test_corrupt_deflate_stream_is_a_one_line_error(tmp_path, capsys):
+    z = write_export(tmp_path / "export.zip", 1)
+    _corrupt_deflate(z)
+    assert zipfile.is_zipfile(z)
+    assert main([str(z), "--db", str(tmp_path / "h.db")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Traceback" not in err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unwritable_db_folder_is_a_one_line_error(box, tmp_path, capsys):
+    _zip(box / "export.zip", 1, 1_000)
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    ro.chmod(0o500)
+    try:
+        assert _run(box, ro / "sub" / "h.db") == 1
+    finally:
+        ro.chmod(0o700)
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Traceback" not in err
+
+
+def test_file_vanishing_while_listing_is_not_ready(box, monkeypatch):
+    gone = _zip(box / "gone.zip", 1, 1_000)
+    real_stat = type(gone).stat
+    calls = {"n": 0}
+
+    def flaky(self, *a, **kw):  # is_file() sees it, then it is moved away
+        if self.name == "gone.zip":
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise FileNotFoundError(self)
+        return real_stat(self, *a, **kw)
+
+    monkeypatch.setattr(type(gone), "stat", flaky)
+    path, why = inbox.pick(box, settle=0)
+    assert path is None and "changed" in why
+
+
+def test_prune_tolerates_a_file_already_removed(box, monkeypatch):
+    _zip(box / "a.zip", 1, 1_000)
+    new = _zip(box / "b.zip", 1, 2_000)
+    real_unlink = type(new).unlink
+
+    def racing(self, missing_ok=False):
+        real_unlink(self)  # someone else deleted it first
+        real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(type(new), "unlink", racing)
+    assert [p.name for p in inbox.prune(box, 1)] == ["a.zip"]

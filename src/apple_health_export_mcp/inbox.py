@@ -4,6 +4,11 @@ For unattended runs (e.g. a launchd `WatchPaths` job on an iCloud Drive folder).
 watcher fires on every change, often several times per copy and while iCloud is still
 downloading, so every check here answers "not ready" rather than failing. Whether the
 picked file was already ingested is `ingest.is_ingested`. Pure module: no FastMCP import.
+
+iCloud evicts files differently by macOS version. Up to macOS 13 an evicted
+`export.zip` is a hidden `.export.zip.icloud` placeholder, detected here. From macOS 14
+it keeps its name as a "dataless" file whose first read downloads it, so the run just
+waits for the download.
 """
 
 from __future__ import annotations
@@ -38,18 +43,26 @@ def pick(
     is still in the cloud is waited for instead of re-ingesting an older local one.
     A file whose size or mtime changes within `settle` seconds is still being copied.
     """
-    candidates = _newest_first(p for p in box.iterdir() if p.is_file() and (_is_zip(p) or _is_placeholder(p)))
+    if not box.is_dir():
+        raise FileNotFoundError(f"no such folder: {box}")
+    try:
+        candidates = _newest_first(p for p in box.iterdir() if p.is_file() and (_is_zip(p) or _is_placeholder(p)))
+    except FileNotFoundError:  # a file was moved away between listing and stat
+        return None, "the folder changed while it was being read"
     if not candidates:
         return None, f"no export (*.zip) in {box}"
     newest = candidates[0]
     if _is_placeholder(newest):
         return None, f"{newest.name[1 : -len(_PLACEHOLDER)]} is in iCloud but not downloaded yet"
-    before = newest.stat()
-    if settle:
-        sleep(settle)
-        after = newest.stat()
-        if (after.st_size, after.st_mtime) != (before.st_size, before.st_mtime):
-            return None, f"{newest.name} is still being written"
+    try:
+        before = newest.stat()
+        if settle:
+            sleep(settle)
+            after = newest.stat()
+            if (after.st_size, after.st_mtime) != (before.st_size, before.st_mtime):
+                return None, f"{newest.name} is still being written"
+    except FileNotFoundError:
+        return None, "the folder changed while it was being read"
     if not zipfile.is_zipfile(newest):
         return None, f"{newest.name} is not a complete zip yet"
     return newest, None
@@ -59,5 +72,5 @@ def prune(box: Path, keep: int) -> list[Path]:
     """Delete all but the newest `keep` zips in `box`; return what was deleted."""
     old = _newest_first(p for p in box.iterdir() if p.is_file() and _is_zip(p))[keep:]
     for p in old:
-        p.unlink()
+        p.unlink(missing_ok=True)  # someone may have removed it already
     return old
