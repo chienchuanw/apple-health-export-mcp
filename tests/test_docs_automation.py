@@ -50,3 +50,40 @@ def test_the_ingest_agent_watches_the_folder_it_ingests():
 def test_the_report_agent_runs_weekly():
     (report,) = [p for p in _plists() if "report" in p["Label"]]
     assert set(report["StartCalendarInterval"]) >= {"Weekday", "Hour", "Minute"}
+
+
+def test_shell_commands_use_the_plists_labels_and_log_paths():
+    text = DOC.read_text()
+    plists = _plists()
+    labels = {p["Label"] for p in plists}
+    used = set(re.findall(r"gui/\$\(id -u\)/(local\.apple-health\.[a-z]+)", text))
+    assert used and used <= labels
+    for p in plists:
+        log = p["StandardOutPath"].replace("/Users/you", "~")
+        assert log in text, f"no command reads {log}"
+
+
+# The log lines the guide explains, as printed by the code (cli.py / ingest.py / inbox.py).
+_LOG_LINES = [
+    "Not ready:",
+    "not downloaded yet",
+    "still being written",
+    "Nothing new:",
+    "is already ingested.",
+    "Done:",
+    "Another ingest is already running; skipping.",
+    "the new export has",
+]
+
+
+@pytest.mark.parametrize("line", _LOG_LINES)
+def test_explained_log_lines_are_what_the_code_prints(line):
+    src = Path(__file__).resolve().parent.parent / "src" / "apple_health_export_mcp"
+    code = "".join((src / f).read_text() for f in ("cli.py", "ingest.py", "inbox.py"))
+    assert line in DOC.read_text()
+    assert line in code
+
+
+def test_relative_links_resolve():
+    for target in re.findall(r"\]\(((?!https?:)[^)#]+)(?:#[^)]*)?\)", DOC.read_text()):
+        assert (DOC.parent / target).exists(), target
