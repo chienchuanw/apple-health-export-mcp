@@ -10,7 +10,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `apple-health-export-mcp-report` writes a weekly Markdown note (YAML frontmatter
   with the week's numbers, per-day and per-workout tables) for a notes vault such as
   Obsidian. Deterministic, read-only, and a rerun on unchanged data leaves the file
-  untouched.
+  untouched. The note is owner-only (`0600`) (ADR-0014).
 
 ## [0.3.0] - 2026-11-22
 
