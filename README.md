@@ -185,9 +185,11 @@ workout_kcal_total: 1520
 ```
 
 The body has a per-day table and a per-activity workout table. A metric with no data
-this week is `null`, never `0`. The note is regenerated output, so rerunning overwrites
-it. Keep your own notes in a separate file. A rerun on unchanged data leaves the
-file untouched, so vault sync has nothing to upload.
+this week is `null` rather than `0`. Counts (`sleep_nights`, `workouts_count`) are `0`.
+A night with only in-bed time (older devices) counts as no sleep. The note is regenerated
+output, so rerunning overwrites it. Keep your own notes in a separate file. A rerun on
+unchanged data leaves the file untouched, so vault sync has nothing to upload. The note
+is created owner-only (`0600`), like the database. See ADR-0014.
 
 > **Privacy:** the note contains your health aggregates. If the vault syncs (Obsidian
 > Sync, iCloud, git), so does the report. Keep `export.zip` and `health.db` outside it.
