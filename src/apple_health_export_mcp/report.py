@@ -8,9 +8,11 @@ is a no-op for the vault.
 
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 from datetime import date, timedelta
+from pathlib import Path
 
 from apple_health_export_mcp import queries
 from apple_health_export_mcp.queries import week_range
@@ -143,3 +145,20 @@ def build(conn: sqlite3.Connection, label: str, start: str, end: str) -> str:
     if missing:
         out += ["", f"No data this week: {', '.join(missing)}."]
     return "\n".join(out) + "\n"
+
+
+def write(out_dir: Path, label: str, text: str) -> Path:
+    """Write `<out_dir>/<label>.md`, skipping the write when the content is unchanged.
+
+    An unchanged rewrite would still bump the mtime and wake up vault sync. The new
+    content goes to a temp file first and is renamed over the note, so a vault app
+    never reads a half-written file.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    note = out_dir / f"{label}.md"
+    if note.exists() and note.read_text(encoding="utf-8") == text:
+        return note
+    tmp = note.with_name(f".{note.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, note)
+    return note

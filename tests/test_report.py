@@ -1,13 +1,16 @@
 """Weekly Markdown report: week resolution, numbers vs synthetic ground truth, CLI."""
 
 import ast
+import os
 from datetime import date
+from importlib.metadata import entry_points
 from pathlib import Path
 
 import pytest
 from fixtures.synthetic import write_export
 
 from apple_health_export_mcp import report
+from apple_health_export_mcp.cli import report_main
 from apple_health_export_mcp.db import connect_readonly
 from apple_health_export_mcp.ingest import ingest
 
@@ -116,3 +119,49 @@ def test_report_module_does_not_import_fastmcp():
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     imported |= {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
     assert not any(m.split(".")[0] == "fastmcp" for m in imported)
+
+
+def test_cli_writes_the_week_note_into_out(synth_db, tmp_path):
+    out = tmp_path / "vault" / "Health"  # created if missing
+    rc = report_main(["--week-of", "2026-10-01", "--out", str(out), "--db", str(synth_db)])
+    assert rc == 0
+    assert (out / "2026-W40.md").read_text() == _build(synth_db)
+
+
+def test_cli_takes_out_from_env(synth_db, tmp_path, monkeypatch):
+    monkeypatch.setenv("AH_REPORT_DIR", str(tmp_path))
+    monkeypatch.setenv("AH_DB_PATH", str(synth_db))
+    assert report_main(["--week", "2026-W40"]) == 0
+    assert (tmp_path / "2026-W40.md").exists()
+
+
+def test_cli_rerun_on_unchanged_data_leaves_the_file_untouched(synth_db, tmp_path):
+    args = ["--week-of", "2026-10-01", "--out", str(tmp_path), "--db", str(synth_db)]
+    assert report_main(args) == 0
+    note = tmp_path / "2026-W40.md"
+    os.utime(note, (1, 1))  # an old mtime: a rewrite would bump it
+    assert report_main(args) == 0
+    assert note.stat().st_mtime == 1
+
+
+def test_cli_without_out_fails_cleanly(synth_db, monkeypatch, capsys):
+    monkeypatch.delenv("AH_REPORT_DIR", raising=False)
+    assert report_main(["--db", str(synth_db)]) == 1
+    assert "AH_REPORT_DIR" in capsys.readouterr().err
+
+
+def test_cli_missing_db_fails_cleanly(tmp_path, capsys):
+    assert report_main(["--out", str(tmp_path), "--db", str(tmp_path / "nope.db")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:") and "Traceback" not in err
+    assert not list(tmp_path.glob("*.md"))
+
+
+def test_cli_bad_week_fails_cleanly(synth_db, tmp_path, capsys):
+    assert report_main(["--week", "2026-47", "--out", str(tmp_path), "--db", str(synth_db)]) == 1
+    assert "YYYY-Www" in capsys.readouterr().err
+
+
+def test_report_console_script_is_registered():
+    eps = {e.name: e.value for e in entry_points(group="console_scripts")}
+    assert eps["apple-health-export-mcp-report"] == "apple_health_export_mcp.cli:report_main"

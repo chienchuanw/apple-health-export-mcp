@@ -1,17 +1,22 @@
-"""Ingest CLI — build the SQLite DB from an Apple Health export.zip (ADR-0006).
+"""Command-line entry points: ingest (ADR-0006) and the weekly report.
 
-Exposed as the `apple-health-export-mcp-ingest` console script (separate from the
-server, which is the bare `apple-health-export-mcp` command — see server.main).
-Run from PyPI/git with: `uvx --from apple-health-export-mcp apple-health-export-mcp-ingest <zip>`.
+`apple-health-export-mcp-ingest` builds the SQLite DB from an Apple Health
+export.zip; `apple-health-export-mcp-report` writes a weekly Markdown note from it.
+Both are separate from the server, which is the bare `apple-health-export-mcp`
+command (see server.main). Run from PyPI/git with:
+`uvx --from apple-health-export-mcp apple-health-export-mcp-ingest <zip>`.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
-from .db import db_path
+from . import report
+from .db import connect_readonly, db_path
 from .ingest import ingest
 
 
@@ -34,6 +39,40 @@ def main(argv: list[str] | None = None) -> int:
         f"Done: {counts['record']:,} records, {counts['workout']:,} workouts "
         f"({counts['workout_stat']:,} workout statistics) → {dest}"
     )
+    return 0
+
+
+def report_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="apple-health-export-mcp-report",
+        description="Write a weekly Markdown health report (e.g. into an Obsidian vault).",
+    )
+    when = parser.add_mutually_exclusive_group()
+    when.add_argument("--week", help="ISO week 'YYYY-Www' (e.g. 2026-W47).")
+    when.add_argument("--week-of", help="Any date 'YYYY-MM-DD' inside the wanted week.")
+    # Neither: the last completed Monday-Sunday week.
+    parser.add_argument("--out", type=Path, default=None, help="Output folder (default: $AH_REPORT_DIR).")
+    parser.add_argument("--db", type=Path, default=None, help="DB path (default: $AH_DB_PATH or XDG).")
+    args = parser.parse_args(argv)
+
+    out = args.out or (Path(os.environ["AH_REPORT_DIR"]) if os.environ.get("AH_REPORT_DIR") else None)
+    if out is None:
+        print("error: no output folder: pass --out or set AH_REPORT_DIR", file=sys.stderr)
+        return 1
+    try:
+        label, start, end = report.resolve_week(week=args.week, week_of=args.week_of)
+        conn = connect_readonly(args.db)
+    except (ValueError, FileNotFoundError, sqlite3.Error) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    try:
+        text = report.build(conn, label, start, end)
+    except sqlite3.Error as e:
+        print(f"error: database error: {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+    print(f"Wrote {report.write(out.expanduser(), label, text)}")
     return 0
 
 
