@@ -79,8 +79,8 @@ Automation → Time of Day*, e.g. Sunday 21:00, then *Weekly*, then *Show Notifi
 ("Export Health data to HealthInbox").
 
 Why not let a shortcut or an app export on its own? iOS keeps Health data unreadable
-while the phone is locked, and Shortcuts has no workout action. The evaluation is in
-[data-sources.md](data-sources.md).
+while the phone is locked, and Shortcuts has no action that reads workouts. The
+evaluation is in [data-sources.md](data-sources.md).
 
 ## The two launchd agents
 
@@ -282,7 +282,8 @@ agent's `ProgramArguments`: `/bin/sh`, `-c`, and
 With `;` instead, a failed report would leave a note holding only the review heading.
 
 The review is appended only if `claude` succeeds, so a failure (e.g. not logged in) never
-ends up in the note: its message goes to the error log and the job exits 1. The report compares the whole file with what it would write, so
+ends up in the note: its message goes to the error log and the job exits 1. The report
+compares the whole file with what it would write, so
 **any** later rerun of the report for that week overwrites the note and drops the review.
 Keep anything you want to keep in a separate note.
 

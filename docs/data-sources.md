@@ -163,8 +163,9 @@ Shape of its JSON (from the format docs; values are placeholders):
 3. How often does a weekly run that fires while the phone is unlocked (e.g. on charger
    connect at a usual time) actually succeed?
 4. Are the `source` values the same device names as `export.xml`'s `sourceName`, and do
-   values and units format the same way? Under `--merge` the content key (ADR-0005) only
-   dedupes byte-identical rows, so any difference double-counts overlapping samples.
+   start and end dates, values and units format the same way? HAE documents a single
+   `date` per sample. Under `--merge` the content key (ADR-0005) hashes type, source,
+   start, end, value and unit, so any difference stores an overlapping sample twice.
 5. Do workout totals match `export.xml`'s `WorkoutStatistics` for the same workout?
 6. On current iOS, can Shortcuts' *Find Health Samples* return workouts, and what strings
    does it use for sample types?
