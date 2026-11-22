@@ -116,6 +116,23 @@ at least one per minute of its start-to-end window (ADR-0012).
 `max_min` is the longest single workout: one far above `avg_min` usually means a session was left
 running, so it is surfaced rather than silently excluded.
 
+### Optional: read-only SQL (`query_sql`)
+
+For questions the tools above can't answer (e.g. "steps on days I ran vs days I didn't"),
+set `AH_ENABLE_SQL=1` in the server's `env` to also register `query_sql(sql)`. It runs a single
+`SELECT` against the database and is off by default because it returns rows, not just aggregates
+(ADR-0013):
+
+- read-only twice over: the connection is `mode=ro`, and an SQLite authorizer refuses anything
+  but `SELECT` (no writes, `PRAGMA`, `ATTACH` or `load_extension`);
+- one statement per call, stopped after 5 s, at most 500 rows (the result says when it was truncated);
+- numbers are raw: `SUM` over `record` double-counts parallel devices unless you filter by `source`,
+  and workout units are not normalized — the fixed tools stay the better choice when they fit.
+
+```json
+"env": { "AH_DB_PATH": "/Users/you/.local/share/apple-health-export-mcp/health.db", "AH_ENABLE_SQL": "1" }
+```
+
 ## Prompts
 
 Reusable coaching workflows the client can invoke (they orchestrate the tools and reply in your language):

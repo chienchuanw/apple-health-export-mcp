@@ -18,7 +18,7 @@ from apple_health_export_mcp import prompts, tools
 
 mcp = FastMCP("apple-health")
 
-for _tool in tools.ALL:
+for _tool in tools.enabled():  # query_sql only with AH_ENABLE_SQL=1 (ADR-0013)
     mcp.tool(annotations=tools.READONLY)(_tool)
 for _prompt in prompts.ALL:
     mcp.prompt(_prompt)
