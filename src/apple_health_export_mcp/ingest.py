@@ -18,8 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .db import connect, init_schema
-from .inbox import sha256
+from .db import connect, connect_readonly, init_schema
 
 BATCH = 10_000
 
@@ -207,12 +206,52 @@ _STAT_SQL = (
 _SQL = {"record": _REC_SQL, "workout": _WK_SQL, "workout_stat": _STAT_SQL}
 
 
+# What the last *successful* ingest read (ADR-0015). Both keys are cleared in the first
+# commit and written after the last batch, so they only ever describe a complete run.
+_DIGEST = "source_sha256"  # identity of the zip's content
+_STAT = "source_stat"  # path|size|mtime_ns: a cache that spares re-hashing an unchanged file
+
+
+def sha256(path: Path) -> str:
+    """Hex SHA-256 of a file, read in 1 MB chunks (an export can be gigabytes)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _stat_key(path: Path) -> str:
+    st = path.stat()
+    return f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+
+
+def is_ingested(zip_path: Path, db: Path) -> tuple[bool, str | None]:
+    """Was `zip_path` the last file fully ingested into `db`? Also return its digest, if computed.
+
+    An unchanged path, size and mtime answer without reading the file. Otherwise the
+    content hash decides: iCloud can rewrite the mtime of a file it re-downloads.
+    """
+    if not db.exists():
+        return False, None
+    conn = connect_readonly(db)
+    try:
+        meta = dict(conn.execute("SELECT k, v FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT)).fetchall())
+    except sqlite3.OperationalError:  # a DB older than the meta table
+        meta = {}
+    finally:
+        conn.close()
+    if _DIGEST in meta and meta.get(_STAT) == _stat_key(zip_path):
+        return True, meta[_DIGEST]
+    digest = sha256(zip_path)
+    return digest == meta.get(_DIGEST), digest
+
+
 def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: str | None = None) -> dict[str, int]:
     """Parse `zip_path` into the DB; return row counts per table.
 
-    On success, `meta.source_sha256` holds the zip's digest (`digest` if the caller
-    already hashed it), so `--inbox` can skip a file that was already ingested. It is
-    cleared first, so a failed run never marks any file as done.
+    On success `meta` records the zip's digest (`digest` if the caller already hashed
+    it) and stat, so `--inbox` can skip a file that was already ingested (ADR-0015).
     """
     zip_path = Path(zip_path).expanduser()
     conn = connect(db, create=True)
@@ -226,7 +265,7 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: st
     # Commit right away so the -wal file exists for the whole ingest: connect_readonly
     # reads "no -wal" as "no writer" and may then open the DB immutable.
     conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_zip',?)", (str(zip_path),))
-    conn.execute("DELETE FROM meta WHERE k='source_sha256'")
+    conn.execute("DELETE FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT))
     conn.commit()
 
     counts = dict.fromkeys(_SQL, 0)
@@ -250,7 +289,10 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: st
                     flush()
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
-    conn.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('source_sha256',?)", (digest or sha256(zip_path),))
+    conn.executemany(
+        "INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)",
+        ((_DIGEST, digest or sha256(zip_path)), (_STAT, _stat_key(zip_path))),
+    )
     conn.commit()
     conn.execute("PRAGMA synchronous=NORMAL")
     # WAL was an ingest speedup only. Leave a single self-contained file: the read-only

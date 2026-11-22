@@ -11,7 +11,7 @@ from fixtures.synthetic import write_export
 
 from apple_health_export_mcp import inbox
 from apple_health_export_mcp.cli import main
-from apple_health_export_mcp.ingest import ingest
+from apple_health_export_mcp.ingest import ingest, is_ingested, sha256
 
 
 def _meta(db, k):
@@ -46,19 +46,42 @@ def box(tmp_path):
 def test_ingest_records_the_zip_digest(tmp_path):
     z = write_export(tmp_path / "export.zip", 1)
     ingest(z, tmp_path / "h.db", progress=lambda *_: None)
-    assert _meta(tmp_path / "h.db", "source_sha256") == inbox.sha256(z)
+    assert is_ingested(z, tmp_path / "h.db") == (True, sha256(z))
+
+
+def test_unchanged_file_is_recognized_without_hashing_it(tmp_path, monkeypatch):
+    z = write_export(tmp_path / "export.zip", 1)
+    ingest(z, tmp_path / "h.db", progress=lambda *_: None)
+    monkeypatch.setattr("apple_health_export_mcp.ingest.sha256", lambda _: pytest.fail("re-hashed"))
+    assert is_ingested(z, tmp_path / "h.db")[0]
+
+
+def test_same_content_with_a_new_mtime_is_still_ingested(tmp_path):
+    z = write_export(tmp_path / "export.zip", 1)
+    ingest(z, tmp_path / "h.db", progress=lambda *_: None)
+    os.utime(z, (9_000, 9_000))  # e.g. iCloud re-downloaded the same file
+    assert is_ingested(z, tmp_path / "h.db") == (True, sha256(z))
+
+
+def test_different_content_is_not_ingested(tmp_path):
+    z = write_export(tmp_path / "export.zip", 1)
+    ingest(z, tmp_path / "h.db", progress=lambda *_: None)
+    other = write_export(tmp_path / "other.zip", 2)
+    assert is_ingested(other, tmp_path / "h.db") == (False, sha256(other))
 
 
 def test_failed_ingest_leaves_no_digest(tmp_path):
     db = tmp_path / "h.db"
-    ingest(write_export(tmp_path / "ok.zip", 1), db, progress=lambda *_: None)
+    ok = write_export(tmp_path / "ok.zip", 1)
+    ingest(ok, db, progress=lambda *_: None)
     bad = tmp_path / "bad.zip"
     with zipfile.ZipFile(bad, "w") as zf:  # valid zip, XML cut off mid-record
         zf.writestr("apple_health_export/export.xml", '<HealthData locale="en_US">\n <Record type="X"')
     with pytest.raises(ET.ParseError):
         ingest(bad, db, progress=lambda *_: None)
     # The previous digest is gone too: a retry of either file must ingest again.
-    assert _meta(db, "source_sha256") is None
+    assert not is_ingested(ok, db)[0]
+    assert _meta(db, "source_sha256") is None and _meta(db, "source_stat") is None
 
 
 # --- picking a candidate -------------------------------------------------------------

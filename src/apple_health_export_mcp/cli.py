@@ -18,14 +18,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from . import inbox, report
-from .db import connect_readonly, db_path
-from .ingest import ingest
+from .db import CAN_LOCK, connect_readonly, db_path, writer_lock
+from .ingest import ingest, is_ingested
 
 
 def _ingest_one(zip_path: Path, db: Path | None, dest: Path, digest: str | None = None) -> int:
-    if not zip_path.expanduser().exists():
-        print(f"error: no such file: {zip_path}", file=sys.stderr)
-        return 1
     print(f"Ingesting {zip_path} → {dest}")
     try:
         counts = ingest(zip_path, db, digest=digest)
@@ -45,13 +42,14 @@ def _ingest_inbox(box: Path, db: Path | None, dest: Path, keep: int | None, sett
         if path is None:
             print(f"Not ready: {why}.")
             return 0
-        digest = inbox.sha256(path)
-        if digest == inbox.ingested_sha256(dest):
+        done, digest = is_ingested(path, dest)
+        if done:
             print(f"Nothing new: {path.name} is already ingested.")
         elif rc := _ingest_one(path, db, dest, digest):
             return rc  # a failed ingest prunes nothing
-        for old in inbox.prune(box, keep) if keep else ():
-            print(f"Removed older export {old.name}")
+        if keep:
+            for old in inbox.prune(box, keep):
+                print(f"Removed older export {old.name}")
     except (OSError, sqlite3.Error) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -83,8 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.keep is not None and (args.inbox is None or args.keep < 1):
         parser.error("--keep N needs --inbox and N >= 1")
 
+    if args.zip is not None and not args.zip.expanduser().exists():
+        print(f"error: no such file: {args.zip}", file=sys.stderr)
+        return 1
+    if not CAN_LOCK:
+        print("warning: no file locking on this platform; run one ingest at a time", file=sys.stderr)
     dest = args.db or db_path()
-    with inbox.lock(dest) as acquired:
+    with writer_lock(dest) as acquired:
         if not acquired:
             if args.inbox:  # a watcher fired again while we were busy: not an error
                 print("Another ingest is already running; skipping.")

@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: no flock
+    fcntl = None
+
+CAN_LOCK = fcntl is not None
 
 # Apple writes timestamps in local time with the offset appended
 # ("2026-06-18 23:13:35 +0300"), so the local calendar day is just the
@@ -74,6 +83,27 @@ def private_dir(d: Path) -> None:
     if not d.exists():
         d.mkdir(parents=True, exist_ok=True)  # exist_ok: a concurrent ingest may win the race
         os.chmod(d, 0o700)  # explicit: mkdir's mode is filtered by the umask
+
+
+@contextmanager
+def writer_lock(db: Path) -> Iterator[bool]:
+    """Hold an exclusive, non-blocking lock on `<db>.lock`; yields False if it is taken.
+
+    Two ingests writing the same DB would interleave their batches, and a file watcher
+    can start a second run while the first is still parsing. Closing the file releases
+    the lock. Without `fcntl` (`CAN_LOCK` is False) it always yields True.
+    """
+    if fcntl is None:
+        yield True
+        return
+    private_dir(db.parent)
+    with open(db.with_name(db.name + ".lock"), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 def _make_private(p: Path) -> None:
