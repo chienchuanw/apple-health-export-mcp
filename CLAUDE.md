@@ -35,13 +35,13 @@ Layering is deliberate — keep it:
 
 - **`queries.py`** — pure SQL helpers + the typed result dataclasses (`TypeInfo`, `QuantityPoint`, `SleepNight`, …), **no FastMCP import**. All query logic and the unit tests live here so it stays testable without a server.
 - **`sql.py`** — the opt-in `query_sql` engine (authorizer allowlist, time budget, row cap, ADR-0013); also **no FastMCP import**.
-- **`tools.py`** — the MCP tool surface: thin wrappers over `queries.py`, the `_store()` context manager (read-only DB open/close + `ValueError`/missing-DB → `ToolError`), and the reusable `Annotated[..., Field(...)]` argument types. Plain (un-decorated) functions exported via `ALL`.
+- **`tools.py`** — the MCP tool surface: thin wrappers over `queries.py`, the `_store()` context manager (read-only DB open/close; `ValueError`, missing DB and `sqlite3.Error` → `ToolError`, so tools need no own try), and the reusable `Annotated[..., Field(...)]` argument types. Plain (un-decorated) functions exported via `ALL`.
 - **`prompts.py`** — coaching prompt **content** as plain functions exported via `ALL`.
 - **`server.py`** — wiring only: creates the `mcp` instance, registers `tools.enabled()` (`tools.ALL`, plus `query_sql` when opted in) (`mcp.tool(annotations=READONLY)`) and `prompts.ALL` (`mcp.prompt`), and holds `main()` + shutdown. `tools.py`/`prompts.py` stay decorator-free so they never import the `mcp` instance (no circular import); returning typed models lets FastMCP emit an output schema per tool.
 - **`ingest.py`** — streaming `iterparse` of the export XML into SQLite; the one-time builder.
 - **`inbox.py`** — drop-folder mode for ingest (`pick` the newest complete zip, `prune`); **no FastMCP import**. "Already ingested?" is `ingest.is_ingested`, the writer lock is `db.writer_lock`.
 - **`db.py`** — schema + `connect()` + `db_path()` (env/XDG resolution).
-- **`report.py`** — the weekly Markdown report (`build` / `write`) and the week helpers (`week_range`, `resolve_week`, also used by `prompts.py`), built on `queries.py`; **no FastMCP import**.
+- **`report.py`** — the weekly Markdown report (`build` / `write` / `resolve_week`), built on `queries.py` (which owns `week_range`, shared with `prompts.py`); **no FastMCP import**.
 - **`cli.py`** — the `apple-health-export-mcp-ingest` and `apple-health-export-mcp-report` entry points.
 
 Three console scripts (see `[project.scripts]`): the **bare** `apple-health-export-mcp` runs the server (`server:main`), `-ingest` builds the DB and `-report` writes the weekly note. This Pattern-B split is intentional (matches reference MCP servers; shallow process tree).
