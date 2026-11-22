@@ -11,7 +11,15 @@ from apple_health_export_mcp import prompts
 # Capitalized first token inside parentheses, then ',' or ')': "(StepCount, sum)".
 _TYPE_IN_PARENS = re.compile(r"\(([A-Z][A-Za-z0-9]+)[,)]")
 # Every metric the prompts ask for — guards the regex against silently matching nothing.
-_EXPECTED = {"StepCount", "ActiveEnergyBurned", "RestingHeartRate", "BodyMass", "VO2Max", "HeartRateVariabilitySDNN"}
+_EXPECTED = {
+    "StepCount",
+    "ActiveEnergyBurned",
+    "RestingHeartRate",
+    "BodyMass",
+    "VO2Max",
+    "HeartRateVariabilitySDNN",
+    "HKCategoryTypeIdentifierSleepAnalysis",  # get_baseline's sleep series
+}
 
 
 def test_every_prompt_type_is_a_full_healthkit_identifier():
@@ -19,8 +27,8 @@ def test_every_prompt_type_is_a_full_healthkit_identifier():
     for fn in prompts.ALL:
         text = fn()
         found = set(_TYPE_IN_PARENS.findall(text))
-        if "get_quantity" in text:
-            assert found, f"{fn.__name__} calls get_quantity but names no type"
+        if "get_quantity" in text or "get_baseline" in text:
+            assert found, f"{fn.__name__} calls get_quantity/get_baseline but names no type"
         for t in found:
             assert t.startswith("HK"), f"{fn.__name__}: {t!r} is not a full HealthKit identifier"
         seen |= found
