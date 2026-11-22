@@ -20,6 +20,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `get_training_load` tool: weekly workout volume with an acute:chronic ratio.
   `readiness_check` and `weekly_review` now use them (ADR-0017).
 
+- `docs/automation.md`: a weekly macOS pipeline with two launchd agents, one that
+  ingests from an iCloud Drive inbox and one that writes the weekly report into a
+  notes vault. It covers where files should live and the iCloud/TCC pitfalls.
+
 ### Changed
 - Re-ingest now rebuilds the database from the export and swaps it in, so entries
   edited or deleted in the Health app no longer linger or double-count. It refuses
