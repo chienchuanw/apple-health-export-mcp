@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
 ### Added
 - Opt-in `query_sql` tool (`AH_ENABLE_SQL=1`): one read-only `SELECT` per call for
   questions the fixed tools can't answer. An SQLite authorizer allows only reads
@@ -83,7 +85,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Coaching prompts: `daily_summary`, `weekly_review`, `monthly_summary`,
   `yearly_summary`, `readiness_check`, `sleep_report`.
 
-[Unreleased]: https://github.com/chienchuanw/apple-health-export-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/chienchuanw/apple-health-export-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/chienchuanw/apple-health-export-mcp/tree/v0.3.0
 [0.2.0]: https://github.com/chienchuanw/apple-health-export-mcp/tree/v0.2.0
 [0.1.1]: https://github.com/burakdirin/apple-health-export-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/burakdirin/apple-health-export-mcp/releases/tag/v0.1.0
