@@ -47,11 +47,15 @@ def weekly_review(
     """Calendar-week review (Mon–Sun): training load, sleep, recovery, and a recommendation."""
     start, end = week_range(week_of or _today())
     return (
-        f"Review the calendar week {start} to {end} (Monday–Sunday). Use get_workouts for training "
-        f"load, get_sleep for nightly sleep, get_quantity for daily steps "
-        f"(HKQuantityTypeIdentifierStepCount, sum) and resting heart rate "
-        f"(HKQuantityTypeIdentifierRestingHeartRate, avg, bucket=day). Assess whether recovery is "
-        f"keeping up with load and whether to push or pull back volume next week. {_REPLY}"
+        f"Review the calendar week {start} to {end} (Monday–Sunday). Use get_training_load "
+        f"(end={end}, weeks=5) for this week's volume and its acute:chronic ratio (acwr) against "
+        f"the 4 weeks before, get_workouts for the activities, get_sleep for nightly sleep, and "
+        f"get_quantity for daily steps (HKQuantityTypeIdentifierStepCount, sum). Use get_baseline "
+        f"(end={end}) for resting heart rate (HKQuantityTypeIdentifierRestingHeartRate, avg) and "
+        f"HRV (HKQuantityTypeIdentifierHeartRateVariabilitySDNN, avg) to see whether recovery "
+        f"markers moved against my own baseline. An acwr well above ~1.3 is a sharp load jump. "
+        f"Assess whether recovery is keeping up with load and whether to push or pull back "
+        f"volume next week. {_REPLY}"
     )
 
 
@@ -87,13 +91,17 @@ def yearly_summary(
 
 def readiness_check() -> str:
     """Should I train hard today? Based on last night's sleep and recent recovery markers."""
+    today = _today()
     return (
-        "Assess whether I'm ready to train hard today. Use get_sleep for last night, and "
-        "get_quantity for resting heart rate (HKQuantityTypeIdentifierRestingHeartRate, avg, "
-        "bucket=day) and HRV (HKQuantityTypeIdentifierHeartRateVariabilitySDNN, avg, bucket=day) "
-        "over the last ~10 days to judge recovery. "
-        "Compare last night and today's markers to my recent baseline, then recommend: full "
-        f"intensity, moderate, or rest. {_REPLY}"
+        f"Assess whether I'm ready to train hard today ({today}). Use get_sleep for last night, "
+        f"and get_baseline (end={today}, recent_days=3) for resting heart rate "
+        f"(HKQuantityTypeIdentifierRestingHeartRate, avg), HRV "
+        f"(HKQuantityTypeIdentifierHeartRateVariabilitySDNN, avg) and sleep "
+        f"(HKCategoryTypeIdentifierSleepAnalysis) to compare the last few days with my own "
+        f"28-day baseline: resting HR up or HRV down by more than about one baseline_sd (|z| > 1) "
+        f"signals under-recovery. Use get_training_load (end={today}, weeks=1) to see whether "
+        f"this week's load already jumped (acwr). Then recommend: full intensity, moderate, or "
+        f"rest. {_REPLY}"
     )
 
 

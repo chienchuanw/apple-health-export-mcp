@@ -8,7 +8,9 @@ offset before julianday(); start/end share an offset so the diff is correct.
 from __future__ import annotations
 
 import sqlite3
+import statistics
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 
 @dataclass
@@ -65,6 +67,43 @@ class WorkoutSummary:
     total_distance_km: float | None
     total_energy_kcal: float | None
     avg_heart_rate: float | None  # bpm, weighted by workout duration
+
+
+@dataclass
+class Baseline:
+    """A metric's recent mean against the user's own preceding baseline (ADR-0017).
+
+    Means are over days that have data (per-day values as `get_quantity` buckets them,
+    or minutes asleep per night for sleep). `z` is delta / baseline_sd.
+    """
+
+    type: str
+    agg: str
+    recent_start: str
+    recent_end: str
+    recent_mean: float | None
+    recent_n: int  # days with data in the recent window
+    baseline_start: str
+    baseline_end: str
+    baseline_mean: float | None
+    baseline_sd: float | None  # sample standard deviation of the daily values
+    baseline_n: int  # days with data in the baseline window
+    delta: float | None  # recent_mean - baseline_mean
+    delta_pct: float | None  # delta as % of baseline_mean
+    z: float | None  # null with < 7 baseline days or zero spread
+
+
+@dataclass
+class TrainingWeek:
+    """Workout volume for one Monday–Sunday week, with its acute:chronic ratio (ADR-0017)."""
+
+    week_start: str
+    week_end: str
+    sessions: int
+    total_min: float
+    total_km: float | None  # 0 without workouts; null if workouts lack distance data
+    total_kcal: float | None
+    acwr: float | None  # total_min / mean of the 4 previous weeks; null if that mean is 0
 
 
 _BUCKET = {
@@ -315,3 +354,101 @@ def workouts(conn: sqlite3.Connection, start: str, end: str) -> list[WorkoutSumm
         )
         for r in rows
     ]
+
+
+SLEEP_TYPE = "HKCategoryTypeIdentifierSleepAnalysis"
+_MIN_Z_DAYS = 7  # fewer baseline days than this give no z: too few to estimate the spread
+_CHRONIC_WEEKS = 4
+MAX_LOAD_WEEKS = 104
+
+
+def _r(v: float | None, nd: int = 2) -> float | None:
+    return None if v is None else round(v, nd)
+
+
+def baseline(
+    conn: sqlite3.Connection,
+    type: str,
+    end: str,
+    recent_days: int = 7,
+    baseline_days: int = 28,
+    agg: str = "avg",
+) -> Baseline:
+    """Compare the `recent_days` ending at `end` with the `baseline_days` just before them.
+
+    Daily values come from `quantity(..., agg, "day")`, so `sum` keeps its per-day
+    device dedupe (ADR-0010). For `HKCategoryTypeIdentifierSleepAnalysis` the daily
+    value is minutes asleep per night (nights with any), and `agg` is ignored.
+    """
+    if agg not in _AGG:
+        raise ValueError(f"agg must be one of {sorted(_AGG)}")
+    if recent_days < 1 or baseline_days < 1:
+        raise ValueError("recent_days and baseline_days must be at least 1")
+    e = date.fromisoformat(end)
+    r0 = e - timedelta(days=recent_days - 1)
+    b1 = r0 - timedelta(days=1)
+    b0 = b1 - timedelta(days=baseline_days - 1)
+    if type == SLEEP_TYPE:
+        daily = {n.night: n.asleep_min for n in sleep(conn, b0.isoformat(), end) if n.asleep_min > 0}
+    else:
+        daily = {p.period: p.value for p in quantity(conn, type, b0.isoformat(), end, agg, "day")}
+    recent = [v for d, v in daily.items() if d >= r0.isoformat()]
+    base = [v for d, v in daily.items() if d < r0.isoformat()]
+    rm = statistics.fmean(recent) if recent else None
+    bm = statistics.fmean(base) if base else None
+    sd = statistics.stdev(base) if len(base) >= 2 else None
+    delta = rm - bm if rm is not None and bm is not None else None
+    return Baseline(
+        type=type,
+        agg=agg,
+        recent_start=r0.isoformat(),
+        recent_end=end,
+        recent_mean=_r(rm),
+        recent_n=len(recent),
+        baseline_start=b0.isoformat(),
+        baseline_end=b1.isoformat(),
+        baseline_mean=_r(bm),
+        baseline_sd=_r(sd),
+        baseline_n=len(base),
+        delta=_r(delta),
+        delta_pct=_r(delta / bm * 100) if delta is not None and bm else None,
+        z=_r(delta / sd) if delta is not None and sd and len(base) >= _MIN_Z_DAYS else None,
+    )
+
+
+def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[TrainingWeek]:
+    """Workout volume per Monday–Sunday week, oldest first, ending with the week of `end`.
+
+    The last week may be partial (it ends at its Sunday, not at `end`). Each week's
+    `acwr` divides its minutes by the mean of the 4 weeks before it; those are read
+    too, so every returned week has one. Units follow `workouts()` (ADR-0011).
+    """
+    if not 1 <= weeks <= MAX_LOAD_WEEKS:
+        raise ValueError(f"weeks must be between 1 and {MAX_LOAD_WEEKS}")
+    e = date.fromisoformat(end)
+    last = e - timedelta(days=e.weekday())
+    rows = []
+    for k in range(weeks + _CHRONIC_WEEKS - 1, -1, -1):
+        mon = last - timedelta(weeks=k)
+        ws = workouts(conn, mon.isoformat(), (mon + timedelta(days=6)).isoformat())
+        sessions = sum(w.n for w in ws)
+
+        def total(vals, sessions=sessions):
+            present = [v for v in vals if v is not None]
+            return round(sum(present), 2) if present else (0 if not sessions else None)
+
+        rows.append(
+            TrainingWeek(
+                week_start=mon.isoformat(),
+                week_end=(mon + timedelta(days=6)).isoformat(),
+                sessions=sessions,
+                total_min=round(sum(w.total_min or 0 for w in ws), 1),
+                total_km=total(w.total_distance_km for w in ws),
+                total_kcal=total(w.total_energy_kcal for w in ws),
+                acwr=None,
+            )
+        )
+    for i in range(_CHRONIC_WEEKS, len(rows)):
+        chronic = statistics.fmean(r.total_min for r in rows[i - _CHRONIC_WEEKS : i])
+        rows[i].acwr = round(rows[i].total_min / chronic, 2) if chronic else None
+    return rows[_CHRONIC_WEEKS:]

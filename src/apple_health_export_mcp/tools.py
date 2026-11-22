@@ -187,8 +187,55 @@ def query_sql(sql: SqlQuery) -> SqlResult:
             raise ToolError(str(e)) from e
 
 
+def get_baseline(
+    type: TypeId,
+    end: DateStr,
+    recent_days: Annotated[int, Field(ge=1, le=90, description="Days in the recent window, ending at `end`.")] = 7,
+    baseline_days: Annotated[
+        int, Field(ge=1, le=365, description="Days in the baseline window, right before the recent one.")
+    ] = 28,
+    agg: Agg = "avg",
+) -> queries.Baseline:
+    """Compare a metric's recent days with the user's own baseline just before them.
+
+    Use it for recovery markers: resting heart rate and HRV (`avg`), steps (`sum`), or
+    sleep via `HKCategoryTypeIdentifierSleepAnalysis` (minutes asleep per night; `agg`
+    is ignored). Each window's mean is over its days with data, from the same per-day
+    values as `get_quantity` (so `sum` is deduped across devices). Returns the two
+    windows, recent_mean, baseline_mean, baseline_sd, delta, delta_pct, and
+    z = delta / baseline_sd. z is null with under 7 baseline days or zero spread. A
+    |z| above ~1 is a notable move against the user's normal. ADR-0017.
+    """
+    with _store() as conn:
+        try:
+            return queries.baseline(conn, type, end, recent_days, baseline_days, agg)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+
+
+def get_training_load(
+    end: DateStr,
+    weeks: Annotated[
+        int, Field(ge=1, le=queries.MAX_LOAD_WEEKS, description="Weeks to return, ending with the week of `end`.")
+    ] = 8,
+) -> list[queries.TrainingWeek]:
+    """Workout volume per Monday–Sunday week, oldest first, with an acute:chronic ratio.
+
+    Each week: sessions, total_min, total_km, total_kcal (units normalized as in
+    `get_workouts`) and acwr = this week's minutes / the mean of the 4 weeks before it
+    (null when that mean is 0). An acwr well above ~1.3 is a sharp load jump. Load is
+    minutes-based: the export has no per-workout intensity score. The last week may be
+    partial when `end` is not a Sunday. ADR-0017.
+    """
+    with _store() as conn:
+        try:
+            return queries.training_load(conn, end, weeks)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+
+
 # Registered by server.py via mcp.tool(annotations=READONLY).
-ALL = [list_types, list_sources, get_quantity, get_sleep, get_workouts]
+ALL = [list_types, list_sources, get_quantity, get_sleep, get_workouts, get_baseline, get_training_load]
 
 
 def enabled() -> list:
