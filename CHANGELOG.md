@@ -10,7 +10,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Opt-in `query_sql` tool (`AH_ENABLE_SQL=1`): one read-only `SELECT` per call for
   questions the fixed tools can't answer. An SQLite authorizer allows only reads
   (no writes, `PRAGMA`, `ATTACH`, `load_extension`), queries stop after 5 s and
-  results are capped at 500 rows with a `truncated` flag. Off by default (ADR-0013).
+  results are capped at 500 rows (with a `truncated` flag) and 100 KB per value.
+  Off by default (ADR-0013).
 
 ## [0.2.0] - 2026-11-21
 

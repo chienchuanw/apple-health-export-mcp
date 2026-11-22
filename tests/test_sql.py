@@ -162,3 +162,52 @@ def test_sql_tool_is_registered_with_ah_enable_sql_1(monkeypatch, reload_server_
 def test_tool_description_states_the_real_limits():
     doc = tools.query_sql.__doc__
     assert f"after {sql.TIME_BUDGET_S:g} s" in doc and "AH_ENABLE_SQL=1" in doc
+
+
+@pytest.mark.parametrize(
+    "stmt",
+    [
+        "SELECT zeroblob(300000000)",
+        "SELECT randomblob(300000000)",
+        "SELECT group_concat(printf('%.*c', 1000, 'x')) FROM (" + COUNT_TO.format(1000) + ")",
+    ],
+)
+def test_huge_values_are_refused_instead_of_allocated(ro, stmt):
+    """One function call can build a huge value in a few VM steps, past the time budget."""
+    with pytest.raises(ValueError, match="too big"):
+        sql.run_select(ro, stmt)
+    assert len(ro.execute("SELECT printf('%.*c', 1000000, 'x')").fetchone()[0]) == 1_000_000  # limit restored
+
+
+def test_oversized_printf_yields_null(ro):
+    """SQLite's printf returns NULL past SQLITE_LIMIT_LENGTH instead of allocating."""
+    assert sql.run_select(ro, "SELECT printf('%.*c', 300000000, 'x')").rows == [[None]]
+    assert len(ro.execute("SELECT printf('%.*c', 1000000, 'x')").fetchone()[0]) == 1_000_000  # limit restored
+
+
+def test_parameter_placeholders_get_their_own_error(ro):
+    with pytest.raises(ValueError) as e:
+        sql.run_select(ro, "SELECT * FROM record WHERE type = ?")
+    assert "one SELECT statement" not in str(e.value) and "inline" in str(e.value)
+
+
+def test_every_authorizer_denial_explains_the_read_only_rule(ro, tmp_path):
+    target = tmp_path / "x.db"
+    with pytest.raises(ValueError, match="only a read-only SELECT"):
+        sql.run_select(ro, f"VACUUM INTO '{target}'")
+    assert not target.exists()
+
+
+def test_non_finite_floats_stay_valid_json(ro):
+    assert sql.run_select(ro, "SELECT 1e999, -1e999").rows == [["inf", "-inf"]]
+
+
+def test_tool_description_lists_every_column():
+    from apple_health_export_mcp.db import SCHEMA
+
+    doc = tools.query_sql.__doc__
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(SCHEMA)
+    for table in ("record", "workout", "workout_stat", "meta"):
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        assert f"{table}({', '.join(cols)})" in doc

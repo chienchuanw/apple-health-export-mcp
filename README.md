@@ -125,7 +125,8 @@ set `AH_ENABLE_SQL=1` in the server's `env` to also register `query_sql(sql)`. I
 
 - read-only twice over: the connection is `mode=ro`, and an SQLite authorizer refuses anything
   but `SELECT` (no writes, `PRAGMA`, `ATTACH` or `load_extension`);
-- one statement per call, stopped after 5 s, at most 500 rows (the result says when it was truncated);
+- one statement per call, stopped after 5 s, at most 500 rows (the result says when it was truncated)
+  and 100 KB per value;
 - numbers are raw: `SUM` over `record` double-counts parallel devices unless you filter by `source`,
   and workout units are not normalized — the fixed tools stay the better choice when they fit.
 
