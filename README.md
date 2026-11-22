@@ -43,9 +43,27 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
      apple-health-export-mcp-ingest ~/Downloads/export.zip
    ```
 
-   Re-ingesting is idempotent, so it is also how an existing database picks up
-   newly supported data (e.g. workout distance / energy / heart rate) — run it
-   again on the same or a newer `export.zip`.
+   Re-ingesting rebuilds the database from that export alone and then swaps it in,
+   so it is also how an existing database picks up newly supported data (e.g.
+   workout distance / energy / heart rate), and how entries you edited or deleted
+   in the Health app disappear. Run it again on the same or a newer `export.zip`.
+   While it runs, the old database stays in place and readable. The new one is
+   built next to it as `health.db.building`, so you need about twice its size in
+   free disk space.
+
+   Two safety valves:
+
+   - If the new export has under 90% of the current database's records (e.g. a
+     truncated export), ingest keeps the current database and exits 1. Re-run
+     with `--force` to replace it anyway.
+   - `--merge` adds the export to the existing database instead (the previous
+     behaviour), for when a newer export intentionally lacks older history, such
+     as a new phone without Health iCloud sync. With `--merge`, rows the newer
+     export no longer has are kept, and an entry edited on the phone stays in
+     both versions.
+
+   On Windows the swap fails while another process (e.g. the MCP server) has the
+   database open.
 
    For a recurring export, point ingest at a drop folder instead of a file (see
    [Drop-folder ingest](#drop-folder-ingest)).
