@@ -24,6 +24,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ingests from an iCloud Drive inbox and one that writes the weekly report into a
   notes vault. It covers where files should live and the iCloud/TCC pitfalls.
 
+- `docs/data-sources.md`: an evaluation of hands-free alternatives to the manual export
+  (iOS Shortcuts, Health Auto Export), from their documentation. Neither replaces
+  `export.xml` for now: iOS locks Health data with the phone, and Shortcuts cannot read
+  workouts. Recorded as ADR-0018 (proposed), with the device tests that would reopen it.
+
 ### Changed
 - Re-ingest now rebuilds the database from the export and swaps it in, so entries
   edited or deleted in the Health app no longer linger or double-count. It refuses
