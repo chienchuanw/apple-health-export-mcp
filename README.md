@@ -121,15 +121,15 @@ and the most reliable cleanup. `fastmcp run fastmcp.json` is for local dev only.
 
 ## Tools
 
-| Tool                                                  | Returns                                                                     |
-| ----------------------------------------------------- | --------------------------------------------------------------------------- |
-| `list_types()`                                        | Which metrics exist in _your_ data + row counts and date spans (discovery)  |
-| `list_sources(type)`                                  | Which devices/apps wrote a metric (counts, date spans)                      |
-| `get_quantity(type, start, end, agg, bucket, source)` | Per day/week/month/all aggregate for a numeric metric (steps, HR, weight…)  |
-| `get_sleep(start, end)`                               | Per-night sleep stage durations                                             |
-| `get_workouts(start, end)`                            | Per activity: count, minutes (total/avg/max), km, active kcal, avg HR       |
-| `get_baseline(type, end, recent_days, baseline_days, agg)` | Recent mean vs your own preceding baseline: delta, delta %, z-score     |
-| `get_training_load(end, weeks)`                       | Per week: sessions, minutes, km, kcal, and acute:chronic ratio (acwr)       |
+| Tool                                                       | Returns                                                                    |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `list_types()`                                             | Which metrics exist in _your_ data + row counts and date spans (discovery) |
+| `list_sources(type)`                                       | Which devices/apps wrote a metric (counts, date spans)                     |
+| `get_quantity(type, start, end, agg, bucket, source)`      | Per day/week/month/all aggregate for a numeric metric (steps, HR, weight…) |
+| `get_sleep(start, end)`                                    | Per-night sleep stage durations                                            |
+| `get_workouts(start, end)`                                 | Per activity: count, minutes (total/avg/max), km, active kcal, avg HR      |
+| `get_baseline(type, end, recent_days, baseline_days, agg)` | Recent mean vs your own preceding baseline: delta, delta %, z-score        |
+| `get_training_load(end, weeks)`                            | Per week: sessions, minutes, km, kcal, and acute:chronic ratio (acwr)      |
 
 All query tools require a date range and return **aggregates only** — never raw rows (ADR-0008).
 `get_quantity` with `agg="sum"` auto-deduplicates parallel devices (Watch + iPhone + apps) so totals
