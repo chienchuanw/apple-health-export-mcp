@@ -94,7 +94,7 @@ def test_different_content_is_not_ingested(tmp_path):
     assert not is_ingested(other, tmp_path / "h.db")
 
 
-def test_failed_ingest_leaves_no_digest(tmp_path):
+def _failed_ingest_after_ok(tmp_path, **kw):
     db = tmp_path / "h.db"
     ok = write_export(tmp_path / "ok.zip", 1)
     ingest(ok, db, progress=lambda *_: None)
@@ -102,10 +102,22 @@ def test_failed_ingest_leaves_no_digest(tmp_path):
     with zipfile.ZipFile(bad, "w") as zf:  # valid zip, XML cut off mid-record
         zf.writestr("apple_health_export/export.xml", '<HealthData locale="en_US">\n <Record type="X"')
     with pytest.raises(ET.ParseError):
-        ingest(bad, db, progress=lambda *_: None)
-    # The previous digest is gone too: a retry of either file must ingest again.
+        ingest(bad, db, progress=lambda *_: None, **kw)
+    return ok, db
+
+
+def test_failed_merge_leaves_no_digest(tmp_path):
+    ok, db = _failed_ingest_after_ok(tmp_path, merge=True)
+    # The merge wrote into the DB: the previous digest is gone, so a retry of either
+    # file must ingest again.
     assert not is_ingested(ok, db)
     assert _meta(db, "source_sha256") is None and _meta(db, "source_stat") is None
+
+
+def test_failed_rebuild_keeps_the_previous_record(tmp_path):
+    ok, db = _failed_ingest_after_ok(tmp_path)
+    # A failed rebuild never touched the DB, so it still is exactly ok.zip's ingest.
+    assert is_ingested(ok, db)
 
 
 # --- picking a candidate -------------------------------------------------------------

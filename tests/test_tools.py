@@ -144,8 +144,13 @@ def test_reingest_with_an_open_reader_still_succeeds(tmp_path, monkeypatch):
     assert len(tools.list_types()) == 4  # still readable, whatever journal mode it ended in
 
 
-def test_wal_file_exists_for_the_whole_ingest(tmp_path):
-    """connect_readonly treats "no -wal" as "no writer"; ingest must create it before parsing."""
+@pytest.mark.parametrize(("merge", "written"), [(True, "health.db"), (False, "health.db.building")])
+def test_wal_file_exists_for_the_whole_ingest(tmp_path, merge, written):
+    """connect_readonly treats "no -wal" as "no writer"; ingest must create it before parsing.
+
+    A merge writes the live DB; a rebuild writes `<db>.building` and leaves the live DB
+    untouched (no -wal: correctly "no writer") until the swap.
+    """
     from fixtures.synthetic import write_export
 
     zip_path = write_export(tmp_path / "export.zip", 1)
@@ -155,7 +160,7 @@ def test_wal_file_exists_for_the_whole_ingest(tmp_path):
 
     def progress(msg):
         if msg.startswith("Reading"):
-            seen.append(db.with_name(db.name + "-wal").exists())
+            seen.append((tmp_path / f"{written}-wal").exists())
 
-    ingest(zip_path, db, progress=progress)
+    ingest(zip_path, db, progress=progress, merge=merge)
     assert seen == [True]
