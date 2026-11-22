@@ -13,7 +13,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from apple_health_export_mcp.queries import week_range
+from apple_health_export_mcp.report import week_range
 
 # Shared tail appended to every prompt: tone, language, and output contract.
 _REPLY = (
