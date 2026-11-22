@@ -58,8 +58,9 @@ what belongs in the vault. They are also created owner-only.
 
    Make sure new exports are stored on the Mac, not only in the cloud. On macOS 15
    (Sequoia) and later, right-click the folder and choose **Keep Downloaded**. On older
-   macOS, turn off *Optimize Mac Storage* (*System Settings → your Apple Account → iCloud
-   → iCloud Drive*). Otherwise the ingest waits for the download (see [Gotchas](#gotchas)).
+   macOS, turn off *Optimize Mac Storage* in the iCloud Drive settings (under your Apple
+   Account in System Settings). Otherwise the ingest waits for the download (see
+   [Gotchas](#gotchas)).
 
 3. **Pick the vault folder** for the notes, e.g. `/Users/you/Documents/Vault/Health`.
    An Obsidian vault kept in iCloud lives under
@@ -236,9 +237,10 @@ Code for a review of the same week and append the answer to the note. This needs
 Code installed, and every run uses tokens. It is not part of the tested setup above, so
 treat it as a starting point.
 
-Claude only gets this server's read-only tools. Its answer goes to standard output, and
-the shell appends it to the note, so no file-edit permission is needed. Put the server
-in its own config file (`/Users/you/.config/apple-health.mcp.json`):
+Claude gets no built-in tools (`--tools ""`) and only this MCP server
+(`--strict-mcp-config`), whose tools are read-only. Its answer goes to standard output,
+and the shell appends it to the note, so no file-edit permission is needed. Put the
+server in its own config file (`/Users/you/.config/apple-health.mcp.json`):
 
 ```json
 {
@@ -252,20 +254,26 @@ in its own config file (`/Users/you/.config/apple-health.mcp.json`):
 ```
 
 Then, after the report has been written (e.g. as a second command run from the report
-agent through `/bin/sh -c`):
+agent through `/bin/sh -c`). Use the absolute path from `which claude`, because launchd
+has no `PATH`:
 
 ```bash
-week=$(date -v-7d +%G-W%V)  # last week's ISO week, the note the report just wrote
-{ printf '\n## Review\n\n'
-  claude -p "Review the calendar week ${week} as the apple-health weekly_review prompt does." \
+monday=$(date -v-7d -v-mon +%F); sunday=$(date -v-7d -v-mon -v+6d +%F)
+week=$(date -v-7d +%G-W%V)  # the note the report just wrote, e.g. 2026-W47
+if review=$(/Users/you/.local/bin/claude -p "Review my health and training for ${monday} \
+to ${sunday}. Use get_training_load (end=${sunday}, weeks=5), get_workouts, get_sleep, and \
+get_baseline (end=${sunday}) for HKQuantityTypeIdentifierRestingHeartRate and \
+HKQuantityTypeIdentifierHeartRateVariabilitySDNN. Be concise; end with one recommendation." \
     --mcp-config /Users/you/.config/apple-health.mcp.json --strict-mcp-config \
-    --allowedTools "mcp__apple-health"
-} >> "/Users/you/Documents/Vault/Health/${week}.md"
+    --tools "" --allowedTools "mcp__apple-health"); then
+  printf '\n## Review\n\n%s\n' "$review" >> "/Users/you/Documents/Vault/Health/${week}.md"
+fi
 ```
 
-The report overwrites the note whenever its numbers change, and that drops the appended
-review. Keep anything you want to keep, such as commentary or your own notes, in a
-separate note.
+The review is appended only if `claude` succeeds, so a failure (e.g. not logged in) never
+ends up in the note. The report compares the whole file with what it would write, so
+**any** later rerun of the report for that week overwrites the note and drops the review.
+Keep anything you want to keep in a separate note.
 
 ## Gotchas
 
