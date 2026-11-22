@@ -55,3 +55,13 @@ def test_directory_created_concurrently_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "exists", lambda self: False if self == parent else real_exists(self))
     connect(parent / "health.db", create=True).close()
     assert _mode(parent / "health.db") == 0o600
+
+
+def test_stale_journal_is_tightened_to_owner_only(tmp_path):
+    db = tmp_path / "health.db"
+    db.touch(mode=0o644)
+    journal = tmp_path / "health.db-journal"
+    journal.touch(mode=0o644)
+    os.chmod(journal, 0o644)
+    connect(db, create=True).close()
+    assert stat.S_IMODE(journal.stat().st_mode) == 0o600

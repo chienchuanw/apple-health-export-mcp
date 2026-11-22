@@ -14,13 +14,13 @@ import os
 import sqlite3
 import zipfile
 from collections.abc import Iterator
-from contextlib import suppress
+from contextlib import closing, suppress
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 from xml.etree import ElementTree as ET
 
-from .db import connect, connect_readonly, db_path, init_schema
+from .db import connect, connect_readonly, db_path, init_schema, remove_db_files
 
 BATCH = 10_000
 
@@ -256,7 +256,6 @@ def is_ingested(zip_path: Path, db: Path) -> bool:
 # Refuse to swap in a rebuild with fewer records than this share of the current DB: a
 # truncated or partial export must not silently wipe history (ADR-0016).
 SHRINK_GUARD = 0.9
-_SIDECARS = ("-wal", "-shm", "-journal")
 
 
 class ShrinkRefused(Exception):
@@ -289,14 +288,14 @@ def ingest(
         if merge:
             return _build(fh, target, zip_path, source, progress)
         building = target.with_name(target.name + ".building")
-        _remove_db(building)  # left over from a crashed run
+        remove_db_files(building)  # left over from a crashed run
         try:
             counts = _build(fh, building, zip_path, source, progress)
         except BaseException:
-            _remove_db(building)
+            remove_db_files(building)
             raise
     # Nothing else has the temp DB open: drop the -shm macOS leaves behind on close.
-    _remove_db(building, main=False)
+    remove_db_files(building, main=False)
     _swap(building, target, force, progress)
     return counts
 
@@ -335,41 +334,28 @@ def _build(fh: BinaryIO, path: Path, zip_path: Path, source, progress) -> dict[s
 
 def _record_count(db: Path) -> int | None:
     """Records in an existing DB, or None if there is none or it can't be read."""
-    if not db.exists():
-        return None
     try:
-        conn = connect_readonly(db)
-    except sqlite3.Error:
+        with closing(connect_readonly(db)) as conn:
+            return conn.execute("SELECT COUNT(*) FROM record").fetchone()[0]
+    except (FileNotFoundError, sqlite3.Error):  # missing, corrupt, or not ours
         return None
-    try:
-        return conn.execute("SELECT COUNT(*) FROM record").fetchone()[0]
-    except sqlite3.Error:  # corrupt, or not a DB of ours: a rebuild is the fix
-        return None
-    finally:
-        conn.close()
 
 
 def _swap(building: Path, target: Path, force: bool, progress) -> None:
     """Rename the finished rebuild over `target`, unless it shrank past the guard."""
-    old, new = _record_count(target), _record_count(building)
-    if not force and old and (new or 0) < SHRINK_GUARD * old:
+    old, new = _record_count(target), _record_count(building) or 0
+    if not force and old and new < SHRINK_GUARD * old:
         raise ShrinkRefused(
-            f"the new export has {new or 0:,} records, the current database {old:,}; "
+            f"the new export has {new:,} records, the current database {old:,}; "
             f"kept the current one (the rebuild is at {building}). "
             "Re-run with --merge to add this export to it, or --force to replace it anyway."
         )
     # The old DB's journal files must not outlive it: next to the new file SQLite would
     # replay a stale -wal or roll back a hot -journal onto it. The writer lock rules out
     # another ingest; read-only readers keep their open handles to the old inode.
-    _remove_db(target, main=False)
+    remove_db_files(target, main=False)
     os.replace(building, target)
     progress(f"Replaced {target} with the rebuilt database")
-
-
-def _remove_db(path: Path, *, main: bool = True) -> None:
-    """Delete a DB file's journal sidecars (and the file itself unless `main=False`)."""
-    for f in ([path] if main else []) + [path.with_name(path.name + s) for s in _SIDECARS]:
-        f.unlink(missing_ok=True)
 
 
 def _parse(fh: BinaryIO, conn: sqlite3.Connection, progress) -> dict[str, int]:
