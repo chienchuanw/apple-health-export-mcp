@@ -27,9 +27,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    shutdown — see [Shutdown & process model](#shutdown--process-model).
 
    ```bash
-   uv tool install git+https://github.com/chienchuanw/apple-health-export-mcp@v0.2.0
-   # PyPI (`uv tool install apple-health-export-mcp`) has 0.1.1, without the 0.2.0
-   # changes (workout statistics, read-only server, private DB file).
+   uv tool install git+https://github.com/chienchuanw/apple-health-export-mcp@v0.3.0
+   # PyPI (`uv tool install apple-health-export-mcp`) has 0.1.1, without the 0.2.0+
+   # changes (workout statistics, read-only server, private DB file, query_sql).
    ```
 
    This puts two commands on your PATH: `apple-health-export-mcp` (the server) and
@@ -115,6 +115,24 @@ A workout without a heart-rate statistic uses the heart-rate samples recorded du
 at least one per minute of its start-to-end window (ADR-0012).
 `max_min` is the longest single workout: one far above `avg_min` usually means a session was left
 running, so it is surfaced rather than silently excluded.
+
+### Optional: read-only SQL (`query_sql`)
+
+For questions the tools above can't answer (e.g. "steps on days I ran vs days I didn't"),
+set `AH_ENABLE_SQL=1` in the server's `env` to also register `query_sql(sql)`. It runs a single
+`SELECT` against the database and is off by default because it returns rows, not just aggregates
+(ADR-0013):
+
+- read-only twice over: the connection is `mode=ro`, and an SQLite authorizer refuses anything
+  but `SELECT` (no writes, `PRAGMA`, `ATTACH` or `load_extension`);
+- one statement per call, stopped after 5 s, at most 500 rows (the result says when it was truncated)
+  and 100 KB per value;
+- numbers are raw: `SUM` over `record` double-counts parallel devices unless you filter by `source`,
+  and workout units are not normalized — the fixed tools stay the better choice when they fit.
+
+```json
+"env": { "AH_DB_PATH": "/Users/you/.local/share/apple-health-export-mcp/health.db", "AH_ENABLE_SQL": "1" }
+```
 
 ## Prompts
 

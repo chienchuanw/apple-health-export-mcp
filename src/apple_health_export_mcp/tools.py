@@ -9,6 +9,7 @@ an output schema per tool. The DB must already exist — build it with
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from typing import Annotated, Literal
@@ -18,6 +19,7 @@ from pydantic import Field
 
 from apple_health_export_mcp import queries
 from apple_health_export_mcp.db import connect_readonly
+from apple_health_export_mcp.sql import MAX_ROWS, SqlResult, run_select
 
 # All tools only read a local, fixed DB: safe to retry, no side effects, no open world.
 READONLY = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
@@ -142,5 +144,53 @@ def get_workouts(start: DateStr, end: DateStr) -> list[queries.WorkoutSummary]:
         return queries.workouts(conn, start, end)
 
 
+SqlQuery = Annotated[
+    str,
+    Field(
+        description="Exactly one SQLite SELECT (WITH … SELECT is fine). Aggregate in SQL; "
+        f"at most {MAX_ROWS} rows come back.",
+        examples=[
+            "SELECT local_date, SUM(CAST(value AS REAL)) FROM record "
+            "WHERE type = 'HKQuantityTypeIdentifierStepCount' AND source LIKE '%Watch%' "
+            "AND local_date BETWEEN '2026-06-01' AND '2026-06-30' GROUP BY local_date"
+        ],
+    ),
+]
+
+
+def query_sql(sql: SqlQuery) -> SqlResult:
+    """Run one read-only SELECT on the health DB, for questions the other tools cannot answer.
+
+    Opt-in (AH_ENABLE_SQL=1). Prefer the other tools when they fit: their numbers are
+    deduplicated and unit-normalized, raw SQL is not. Tables (all columns):
+    - record(key, type, source, unit, value, start, end, created, local_date): one row
+      per sample. `value` is TEXT, so use CAST(value AS REAL) for numbers (category types
+      such as sleep hold enum strings). `local_date` is the local 'YYYY-MM-DD' day;
+      filter on (type, local_date), which is indexed. Find types with `list_types`.
+    - workout(key, activity, duration, duration_unit, source, start, end, created, local_date).
+    - workout_stat(workout_key, type, unit, sum, average, minimum, maximum, start, end):
+      per-workout distance/energy/heart rate in raw units (km or mi, kcal or kJ);
+      workout_key = workout.key.
+    - meta(k, v): ingest bookkeeping.
+    `start`/`end` are local times with the offset ('2026-06-29 08:14:22 +0300').
+    Watch, iPhone and apps record in parallel, so SUM over record without a `source`
+    filter double-counts (`get_quantity` dedupes this). Source names are personal
+    device names: look them up with `list_sources`, don't guess them. Only SELECT runs: writes,
+    PRAGMA and ATTACH are refused; read `sqlite_master` for the full schema. A query
+    is stopped after 5 s. Returns {columns, rows, truncated}; truncated is true when
+    more rows matched than were returned.
+    """
+    with _store() as conn:
+        try:
+            return run_select(conn, sql)
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+
+
 # Registered by server.py via mcp.tool(annotations=READONLY).
 ALL = [list_types, list_sources, get_quantity, get_sleep, get_workouts]
+
+
+def enabled() -> list:
+    """The tools to register: ALL, plus `query_sql` only when AH_ENABLE_SQL=1 (ADR-0013)."""
+    return [*ALL, query_sql] if os.environ.get("AH_ENABLE_SQL") == "1" else list(ALL)
