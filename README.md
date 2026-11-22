@@ -143,9 +143,9 @@ running, so it is surfaced rather than silently excluded.
 `get_baseline` compares the last `recent_days` (default 7) ending at `end` with the `baseline_days`
 (default 28) just before them, using the same per-day values as `get_quantity`. Pass
 `HKCategoryTypeIdentifierSleepAnalysis` to compare minutes asleep per night. `z` is the change in
-baseline standard deviations, and it is `null` with fewer than 7 baseline days. `get_training_load`
+baseline standard deviations, and it is `null` with fewer than 7 baseline days or no spread. `get_training_load`
 gives weekly workout minutes and `acwr`, a week's minutes divided by the mean of the 4 weeks before
-it. Load is minutes-based, because the export has no per-workout intensity (ADR-0017). The
+it. Nothing after `end` is counted, so the current week is partial. Load is minutes-based, because the export has no per-workout intensity (ADR-0017). The
 `readiness_check` and `weekly_review` prompts use both tools.
 
 ### Optional: read-only SQL (`query_sql`)

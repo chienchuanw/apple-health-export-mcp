@@ -99,9 +99,10 @@ def readiness_check() -> str:
         f"(HKQuantityTypeIdentifierHeartRateVariabilitySDNN, avg) and sleep "
         f"(HKCategoryTypeIdentifierSleepAnalysis) to compare the last few days with my own "
         f"28-day baseline: resting HR up or HRV down by more than about one baseline_sd (|z| > 1) "
-        f"signals under-recovery. Use get_training_load (end={today}, weeks=1) to see whether "
-        f"this week's load already jumped (acwr). Then recommend: full intensity, moderate, or "
-        f"rest. {_REPLY}"
+        f"signals under-recovery. Use get_training_load (end={today}, weeks=2) for recent load: "
+        f"this week is partial (Monday to today), so its acwr reads low early in the week; judge "
+        f"a load jump from last week's acwr plus this week's minutes so far. Then recommend: "
+        f"full intensity, moderate, or rest. {_REPLY}"
     )
 
 

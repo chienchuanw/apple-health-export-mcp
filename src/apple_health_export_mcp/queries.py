@@ -105,7 +105,7 @@ class TrainingWeek:
     """Workout volume for one Monday–Sunday week, with its acute:chronic ratio (ADR-0017)."""
 
     week_start: str
-    week_end: str
+    week_end: str  # Sunday, or `end` for the last week when it is not over yet
     sessions: int
     total_min: float
     total_km: float | None  # 0 without workouts; null if workouts lack distance data
@@ -435,14 +435,15 @@ def baseline(
         baseline_n=len(base),
         delta=_r(delta),
         delta_pct=_r(delta / bm * 100) if delta is not None and bm else None,
-        z=_r(delta / sd) if delta is not None and sd and len(base) >= _MIN_Z_DAYS else None,
+        # Judged on the reported (rounded) sd, so z never contradicts a baseline_sd of 0.0.
+        z=_r(delta / sd) if delta is not None and _r(sd) and len(base) >= _MIN_Z_DAYS else None,
     )
 
 
 def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[TrainingWeek]:
     """Workout volume per Monday–Sunday week, oldest first, ending with the week of `end`.
 
-    The last week may be partial (it ends at its Sunday, not at `end`). Each week's
+    The last week stops at `end`, so it is partial unless `end` is a Sunday. Each week's
     `acwr` divides its minutes by the mean of the 4 weeks before it; those are read
     too, so every returned week has one. One query, with the same unit normalization
     as `workouts()` (ADR-0011) but without its heart-rate fallback, which load ignores.
@@ -451,7 +452,7 @@ def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[Tr
         raise ValueError(f"weeks must be between 1 and {MAX_LOAD_WEEKS}")
     last = date.fromisoformat(week_range(end)[0])
     mondays = [last - timedelta(weeks=k) for k in range(weeks + _CHRONIC_WEEKS - 1, -1, -1)]
-    first, final = mondays[0].isoformat(), week_range(end)[1]
+    first = mondays[0].isoformat()
     rows = conn.execute(
         f"""
         WITH w AS (
@@ -465,7 +466,7 @@ def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[Tr
         FROM w LEFT JOIN st ON st.workout_key = w.key
         GROUP BY monday
         """,
-        (first, final),
+        (first, end),
     ).fetchall()
     by_week = {r["monday"]: r for r in rows}
     mins = [by_week[m.isoformat()]["mins"] if m.isoformat() in by_week else 0 for m in mondays]
@@ -476,7 +477,7 @@ def training_load(conn: sqlite3.Connection, end: str, weeks: int = 8) -> list[Tr
         out.append(
             TrainingWeek(
                 week_start=mondays[i].isoformat(),
-                week_end=(mondays[i] + timedelta(days=6)).isoformat(),
+                week_end=min((mondays[i] + timedelta(days=6)).isoformat(), end),
                 sessions=r["n"] if r else 0,
                 total_min=round(mins[i], 1),
                 # No workouts: 0. Workouts without distance/energy statistics: null.
