@@ -15,6 +15,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `*.zip` in a drop folder, and does nothing when it is not downloaded or copied yet or
   was already ingested. Safe to call repeatedly from a file watcher (ADR-0015).
 
+- `get_baseline` tool: a metric's recent mean against your own preceding baseline
+  (delta, delta %, z-score), including sleep as minutes asleep per night.
+  `get_training_load` tool: weekly workout volume with an acute:chronic ratio.
+  `readiness_check` and `weekly_review` now use them (ADR-0017).
+
 ### Changed
 - Re-ingest now rebuilds the database from the export and swaps it in, so entries
   edited or deleted in the Health app no longer linger or double-count. It refuses

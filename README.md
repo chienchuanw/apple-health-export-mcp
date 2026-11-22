@@ -128,6 +128,8 @@ and the most reliable cleanup. `fastmcp run fastmcp.json` is for local dev only.
 | `get_quantity(type, start, end, agg, bucket, source)` | Per day/week/month/all aggregate for a numeric metric (steps, HR, weight…)  |
 | `get_sleep(start, end)`                               | Per-night sleep stage durations                                             |
 | `get_workouts(start, end)`                            | Per activity: count, minutes (total/avg/max), km, active kcal, avg HR       |
+| `get_baseline(type, end, recent_days, baseline_days, agg)` | Recent mean vs your own preceding baseline: delta, delta %, z-score     |
+| `get_training_load(end, weeks)`                       | Per week: sessions, minutes, km, kcal, and acute:chronic ratio (acwr)       |
 
 All query tools require a date range and return **aggregates only** — never raw rows (ADR-0008).
 `get_quantity` with `agg="sum"` auto-deduplicates parallel devices (Watch + iPhone + apps) so totals
@@ -138,6 +140,13 @@ A workout without a heart-rate statistic uses the heart-rate samples recorded du
 at least one per minute of its start-to-end window (ADR-0012).
 `max_min` is the longest single workout: one far above `avg_min` usually means a session was left
 running, so it is surfaced rather than silently excluded.
+`get_baseline` compares the last `recent_days` (default 7) ending at `end` with the `baseline_days`
+(default 28) just before them, using the same per-day values as `get_quantity`. Pass
+`HKCategoryTypeIdentifierSleepAnalysis` to compare minutes asleep per night. `z` is the change in
+baseline standard deviations, and it is `null` with fewer than 7 baseline days. `get_training_load`
+gives weekly workout minutes and `acwr`, a week's minutes divided by the mean of the 4 weeks before
+it. Load is minutes-based, because the export has no per-workout intensity (ADR-0017). The
+`readiness_check` and `weekly_review` prompts use both tools.
 
 ### Optional: read-only SQL (`query_sql`)
 
