@@ -8,10 +8,12 @@ to today / this week / this month / this year, so each prompt works with no inpu
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 from typing import Annotated
 
 from pydantic import Field
+
+from apple_health_export_mcp.queries import week_range
 
 # Shared tail appended to every prompt: tone, language, and output contract.
 _REPLY = (
@@ -25,13 +27,6 @@ _DayArg = Annotated[str, Field(description="Date 'YYYY-MM-DD'; defaults to today
 
 def _today() -> str:
     return date.today().isoformat()
-
-
-def _week_range(d: str) -> tuple[str, str]:
-    """Monday–Sunday calendar week containing date `d` ('YYYY-MM-DD')."""
-    dt = date.fromisoformat(d)
-    monday = dt - timedelta(days=dt.weekday())
-    return monday.isoformat(), (monday + timedelta(days=6)).isoformat()
 
 
 def daily_summary(day: _DayArg = "") -> str:
@@ -50,7 +45,7 @@ def weekly_review(
     week_of: Annotated[str, Field(description="Any date inside the wanted week; defaults to this week.")] = "",
 ) -> str:
     """Calendar-week review (Mon–Sun): training load, sleep, recovery, and a recommendation."""
-    start, end = _week_range(week_of or _today())
+    start, end = week_range(week_of or _today())
     return (
         f"Review the calendar week {start} to {end} (Monday–Sunday). Use get_workouts for training "
         f"load, get_sleep for nightly sleep, get_quantity for daily steps "
