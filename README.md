@@ -210,7 +210,9 @@ It is safe to run as often as you like, e.g. from a file watcher. Each run:
 Errors (no health data in the zip, a corrupt XML, a missing folder) exit 1 with a one-line
 `error:` message. A failed ingest records no digest, so the next run retries it.
 File locking uses `fcntl` (macOS/Linux). To run it on a schedule, see
-[`docs/automation.md`](docs/automation.md).
+[`docs/automation.md`](docs/automation.md). Why the export stays a manual step on the
+iPhone (and what Shortcuts or a third-party exporter could and could not replace) is in
+[`docs/data-sources.md`](docs/data-sources.md).
 
 ## Weekly report
 

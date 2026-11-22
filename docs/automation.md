@@ -78,6 +78,10 @@ To be reminded, add a weekly automation in the Shortcuts app: *Automation → Ne
 Automation → Time of Day*, e.g. Sunday 21:00, then *Weekly*, then *Show Notification*
 ("Export Health data to HealthInbox").
 
+Why not let a shortcut or an app export on its own? iOS keeps Health data unreadable
+while the phone is locked, and Shortcuts has no workout action. The evaluation is in
+[data-sources.md](data-sources.md).
+
 ## The two launchd agents
 
 In both files, replace every `/Users/you` path with yours. Use the command paths from

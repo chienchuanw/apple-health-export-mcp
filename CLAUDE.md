@@ -10,7 +10,7 @@ A FastMCP (v3, `>=3.4.10,<4`) stdio MCP server that answers questions about a us
 export.zip ──(ingest CLI, one-time)──► SQLite (health.db) ──◄── MCP server tools query it
 ```
 
-The design rationale lives in [`docs/adr.md`](docs/adr.md) (12 ADRs). **Read it before changing how data is parsed, stored, or aggregated, and add an ADR entry for such changes** — the reasoning there is load-bearing and not re-derivable from the diff.
+The design rationale lives in [`docs/adr.md`](docs/adr.md) (one ADR per decision). **Read it before changing how data is parsed, stored, or aggregated, and add an ADR entry for such changes** — the reasoning there is load-bearing and not re-derivable from the diff.
 
 ## Commands
 
