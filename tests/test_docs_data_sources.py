@@ -18,14 +18,15 @@ def _adr(number: str) -> str:
 
 def test_adr_0018_is_proposed_and_covers_the_adrs_a_new_source_touches():
     adr = _adr("0018")
+    # Pinned on purpose: whoever accepts or supersedes ADR-0018 (#24) updates this line.
     assert "**Status:** proposed" in adr
-    for dependency in ("0004", "0009", "0010", "0011", "0012", "0016"):
+    for dependency in ("0004", "0005", "0009", "0010", "0011", "0012", "0015", "0016"):
         assert f"ADR-{dependency}" in adr, f"ADR-0018 says nothing about ADR-{dependency}"
     assert "data-sources.md" in adr
 
 
 @pytest.mark.parametrize("question", range(1, 8))
-def test_each_of_the_seven_questions_is_answered_for_both_candidates(question):
+def test_each_of_the_seven_questions_has_an_entry_for_both_candidates(question):
     text = DOC.read_text()
     shortcuts, hae = text.split("## A) ")[1].split("## B) ")
     hae = hae.split("\n## ")[0]
@@ -43,5 +44,12 @@ def test_relative_links_resolve():
 
 
 def test_readme_and_automation_guide_link_the_evaluation():
-    assert "docs/data-sources.md" in (DOCS.parent / "README.md").read_text()
-    assert "(data-sources.md)" in (DOCS / "automation.md").read_text()
+    for page in (DOCS.parent / "README.md", DOCS / "automation.md"):
+        targets = re.findall(r"\]\(([^)#]*data-sources\.md)\)", page.read_text())
+        assert targets, f"{page.name} does not link data-sources.md"
+        assert all((page.parent / target).resolve() == DOC for target in targets)
+
+
+def test_open_device_tests_are_tracked():
+    assert "issues/24" in DOC.read_text()
+    assert "#24" in _adr("0018")
