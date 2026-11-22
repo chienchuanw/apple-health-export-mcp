@@ -51,12 +51,16 @@ def report_main(argv: list[str] | None = None) -> int:
     when.add_argument("--week", help="ISO week 'YYYY-Www' (e.g. 2026-W47).")
     when.add_argument("--week-of", help="Any date 'YYYY-MM-DD' inside the wanted week.")
     # Neither: the last completed Monday-Sunday week.
-    parser.add_argument("--out", type=Path, default=None, help="Output folder (default: $AH_REPORT_DIR).")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=os.environ.get("AH_REPORT_DIR") or None,  # empty = unset
+        help="Output folder (default: $AH_REPORT_DIR).",
+    )
     parser.add_argument("--db", type=Path, default=None, help="DB path (default: $AH_DB_PATH or XDG).")
     args = parser.parse_args(argv)
 
-    out = args.out or (Path(os.environ["AH_REPORT_DIR"]) if os.environ.get("AH_REPORT_DIR") else None)
-    if out is None:
+    if args.out is None:
         print("error: no output folder: pass --out or set AH_REPORT_DIR", file=sys.stderr)
         return 1
     try:
@@ -72,7 +76,7 @@ def report_main(argv: list[str] | None = None) -> int:
         return 1
     finally:
         conn.close()
-    print(f"Wrote {report.write(out.expanduser(), label, text)}")
+    print(f"Wrote {report.write(args.out.expanduser(), label, text)}")
     return 0
 
 

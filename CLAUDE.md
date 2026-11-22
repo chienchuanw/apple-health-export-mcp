@@ -40,7 +40,7 @@ Layering is deliberate — keep it:
 - **`server.py`** — wiring only: creates the `mcp` instance, registers `tools.enabled()` (`tools.ALL`, plus `query_sql` when opted in) (`mcp.tool(annotations=READONLY)`) and `prompts.ALL` (`mcp.prompt`), and holds `main()` + shutdown. `tools.py`/`prompts.py` stay decorator-free so they never import the `mcp` instance (no circular import); returning typed models lets FastMCP emit an output schema per tool.
 - **`ingest.py`** — streaming `iterparse` of the export XML into SQLite; the one-time builder.
 - **`db.py`** — schema + `connect()` + `db_path()` (env/XDG resolution).
-- **`report.py`** — the weekly Markdown report (`build` / `write` / `resolve_week`), built on `queries.py`; **no FastMCP import**.
+- **`report.py`** — the weekly Markdown report (`build` / `write`) and the week helpers (`week_range`, `resolve_week`, also used by `prompts.py`), built on `queries.py`; **no FastMCP import**.
 - **`cli.py`** — the `apple-health-export-mcp-ingest` and `apple-health-export-mcp-report` entry points.
 
 Three console scripts (see `[project.scripts]`): the **bare** `apple-health-export-mcp` runs the server (`server:main`), `-ingest` builds the DB and `-report` writes the weekly note. This Pattern-B split is intentional (matches reference MCP servers; shallow process tree).

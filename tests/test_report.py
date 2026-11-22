@@ -2,6 +2,7 @@
 
 import ast
 import os
+import sqlite3
 from datetime import date
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -11,7 +12,7 @@ from fixtures.synthetic import write_export
 
 from apple_health_export_mcp import report
 from apple_health_export_mcp.cli import report_main
-from apple_health_export_mcp.db import connect_readonly
+from apple_health_export_mcp.db import connect_readonly, init_schema
 from apple_health_export_mcp.ingest import ingest
 
 
@@ -165,3 +166,25 @@ def test_cli_bad_week_fails_cleanly(synth_db, tmp_path, capsys):
 def test_report_console_script_is_registered():
     eps = {e.name: e.value for e in entry_points(group="console_scripts")}
     assert eps["apple-health-export-mcp-report"] == "apple_health_export_mcp.cli:report_main"
+
+
+def test_weekly_resting_hr_is_the_sample_mean_not_the_mean_of_daily_means():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_schema(conn)
+    rhr = "HKQuantityTypeIdentifierRestingHeartRate"
+    for i, (start, v) in enumerate(
+        [("2026-10-05 07:00:00 +0800", "50"), ("2026-10-05 19:00:00 +0800", "60"), ("2026-10-06 07:00:00 +0800", "70")]
+    ):
+        conn.execute(
+            "INSERT INTO record(key,type,value,start,end,local_date) VALUES (?,?,?,?,?,?)",
+            (bytes([i]), rhr, v, start, start, start[:10]),
+        )
+    fm = _frontmatter(report.build(conn, *report.resolve_week(week_of="2026-10-05")))
+    assert fm["resting_hr_avg"] == "60"  # (50+60+70)/3, not (55+70)/2 = 62.5
+
+
+def test_cli_treats_an_empty_report_dir_as_unset(synth_db, monkeypatch, capsys):
+    monkeypatch.setenv("AH_REPORT_DIR", "")
+    assert report_main(["--db", str(synth_db)]) == 1
+    assert "AH_REPORT_DIR" in capsys.readouterr().err
