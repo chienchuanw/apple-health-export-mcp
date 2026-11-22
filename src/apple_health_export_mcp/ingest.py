@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import BinaryIO
 from xml.etree import ElementTree as ET
 
-from .db import connect, connect_readonly, init_schema
+from .db import connect, connect_readonly, db_path, init_schema
 
 BATCH = 10_000
 
@@ -253,20 +253,58 @@ def is_ingested(zip_path: Path, db: Path) -> bool:
     return meta.get(_STAT) == _stat_key(zip_path) or sha256(zip_path) == meta[_DIGEST]
 
 
-def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[str, int]:
+# Refuse to swap in a rebuild with fewer records than this share of the current DB: a
+# truncated or partial export must not silently wipe history (ADR-0016).
+SHRINK_GUARD = 0.9
+_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+class ShrinkRefused(Exception):
+    """The rebuilt DB is much smaller than the current one; it was not swapped in."""
+
+
+def ingest(
+    zip_path: Path, db: Path | None = None, *, progress=print, merge: bool = False, force: bool = False
+) -> dict[str, int]:
     """Parse `zip_path` into the DB; return row counts per table.
+
+    By default the DB is rebuilt from this export alone in `<db>.building` and then
+    renamed over the old one, so rows edited or deleted on the phone disappear
+    (ADR-0016). `merge=True` writes into the existing DB instead (`INSERT OR IGNORE`,
+    ADR-0005), for an export that intentionally lacks older history. A rebuild with
+    under `SHRINK_GUARD` of the current record count raises `ShrinkRefused` unless
+    `force` is set.
 
     On success `meta` records the zip's digest and stat, so `--inbox` can skip a file
     that was already ingested (ADR-0015). Both are taken from the same open file that
     is parsed, so a file replaced mid-run is never marked as ingested.
     """
     zip_path = Path(zip_path).expanduser()
+    target = db or db_path()
     # Opened before the DB is touched: a missing file leaves the previous record intact.
     with open(zip_path, "rb") as fh:
         # Identity of the bytes about to be parsed, not of whatever the path holds later.
         source = ((_DIGEST, _hash(fh)), (_STAT, _stat_key(zip_path, os.fstat(fh.fileno()))))
         fh.seek(0)
-        conn = connect(db, create=True)
+        if merge:
+            return _build(fh, target, zip_path, source, progress)
+        building = target.with_name(target.name + ".building")
+        _remove_db(building)  # left over from a crashed run
+        try:
+            counts = _build(fh, building, zip_path, source, progress)
+        except BaseException:
+            _remove_db(building)
+            raise
+    # Nothing else has the temp DB open: drop the -shm macOS leaves behind on close.
+    _remove_db(building, main=False)
+    _swap(building, target, force, progress)
+    return counts
+
+
+def _build(fh: BinaryIO, path: Path, zip_path: Path, source, progress) -> dict[str, int]:
+    """Write the export in `fh` into the DB at `path` (created if missing)."""
+    conn = connect(path, create=True)
+    try:
         init_schema(conn)
         # Ingest-only speedups; safe because it's a rebuildable derived store. ADR-0003.
         conn.execute("PRAGMA journal_mode=WAL")
@@ -280,17 +318,58 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[st
         conn.execute("DELETE FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT))
         conn.commit()
         counts = _parse(fh, conn, progress)
-    conn.executemany("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", source)
-    conn.commit()
-    conn.execute("PRAGMA synchronous=NORMAL")
-    # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
-    # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
-    # with a server connection attached the switch is refused ("database is locked"),
-    # but every row is already committed and connect_readonly copes with a WAL DB.
-    with suppress(sqlite3.OperationalError):
-        conn.execute("PRAGMA journal_mode=DELETE")
-    conn.close()
+        conn.executemany("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", source)
+        conn.commit()
+        conn.execute("PRAGMA synchronous=NORMAL")
+        # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
+        # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
+        # with a server connection attached the switch is refused ("database is locked"),
+        # but every row is already committed and connect_readonly copes with a WAL DB.
+        # (A rebuild's temp DB has no readers, so there it always succeeds.)
+        with suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA journal_mode=DELETE")
+    finally:
+        conn.close()
     return counts
+
+
+def _record_count(db: Path) -> int | None:
+    """Records in an existing DB, or None if there is none or it can't be read."""
+    if not db.exists():
+        return None
+    try:
+        conn = connect_readonly(db)
+    except sqlite3.Error:
+        return None
+    try:
+        return conn.execute("SELECT COUNT(*) FROM record").fetchone()[0]
+    except sqlite3.Error:  # corrupt, or not a DB of ours: a rebuild is the fix
+        return None
+    finally:
+        conn.close()
+
+
+def _swap(building: Path, target: Path, force: bool, progress) -> None:
+    """Rename the finished rebuild over `target`, unless it shrank past the guard."""
+    old, new = _record_count(target), _record_count(building)
+    if not force and old and (new or 0) < SHRINK_GUARD * old:
+        raise ShrinkRefused(
+            f"the new export has {new or 0:,} records, the current database {old:,}; "
+            f"kept the current one (the rebuild is at {building}). "
+            "Re-run with --merge to add this export to it, or --force to replace it anyway."
+        )
+    # The old DB's journal files must not outlive it: next to the new file SQLite would
+    # replay a stale -wal or roll back a hot -journal onto it. The writer lock rules out
+    # another ingest; read-only readers keep their open handles to the old inode.
+    _remove_db(target, main=False)
+    os.replace(building, target)
+    progress(f"Replaced {target} with the rebuilt database")
+
+
+def _remove_db(path: Path, *, main: bool = True) -> None:
+    """Delete a DB file's journal sidecars (and the file itself unless `main=False`)."""
+    for f in ([path] if main else []) + [path.with_name(path.name + s) for s in _SIDECARS]:
+        f.unlink(missing_ok=True)
 
 
 def _parse(fh: BinaryIO, conn: sqlite3.Connection, progress) -> dict[str, int]:

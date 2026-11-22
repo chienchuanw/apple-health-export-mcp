@@ -21,17 +21,20 @@ from xml.etree import ElementTree as ET
 
 from . import inbox, report
 from .db import CAN_LOCK, connect_readonly, db_path, writer_lock
-from .ingest import ingest, is_ingested
+from .ingest import ShrinkRefused, ingest, is_ingested
 
 # What a broken or truncated export can raise mid-parse: a bad zip directory or CRC,
 # a corrupt deflate stream (zlib.error), a member cut short (EOFError), bad XML.
 _EXPORT_ERRORS = (ValueError, zipfile.BadZipFile, zlib.error, EOFError, ET.ParseError, sqlite3.Error, OSError)
 
 
-def _ingest_one(zip_path: Path, db: Path | None, dest: Path) -> int:
+def _ingest_one(zip_path: Path, db: Path | None, dest: Path, how: dict) -> int:
     print(f"Ingesting {zip_path} → {dest}")
     try:
-        counts = ingest(zip_path, db)
+        counts = ingest(zip_path, db, **how)
+    except ShrinkRefused as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     except _EXPORT_ERRORS as e:
         print(f"error: cannot ingest {zip_path}: {e}", file=sys.stderr)
         return 1
@@ -42,7 +45,7 @@ def _ingest_one(zip_path: Path, db: Path | None, dest: Path) -> int:
     return 0
 
 
-def _ingest_inbox(box: Path, db: Path | None, dest: Path, keep: int | None, settle: float) -> int:
+def _ingest_inbox(box: Path, db: Path | None, dest: Path, how: dict, keep: int | None, settle: float) -> int:
     try:
         path, why = inbox.pick(box, settle=settle)
         if path is None:
@@ -50,7 +53,7 @@ def _ingest_inbox(box: Path, db: Path | None, dest: Path, keep: int | None, sett
             return 0
         if is_ingested(path, dest):
             print(f"Nothing new: {path.name} is already ingested.")
-        elif rc := _ingest_one(path, db, dest):
+        elif rc := _ingest_one(path, db, dest, how):
             return rc  # a failed ingest prunes nothing
         if keep:
             for old in inbox.prune(box, keep):
@@ -79,6 +82,18 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         help="With --inbox: seconds a file must stay unchanged to count as copied (default 2).",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--merge",
+        action="store_true",
+        help="Add this export to the existing database instead of rebuilding it "
+        "(keeps rows a newer export no longer has).",
+    )
+    mode.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace the database even if the new export has far fewer records.",
+    )
     args = parser.parse_args(argv)
     if (args.zip is None) == (args.inbox is None):
         parser.error("pass either an export.zip or --inbox DIR")
@@ -93,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     if not CAN_LOCK:
         print("warning: no file locking on this platform; run one ingest at a time", file=sys.stderr)
     dest = args.db or db_path()
+    how = {"merge": args.merge, "force": args.force}
     with ExitStack() as stack:
         try:
             acquired = stack.enter_context(writer_lock(dest))
@@ -107,8 +123,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.inbox:
             settle = 2.0 if args.settle is None else args.settle
-            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, args.keep, settle)
-        return _ingest_one(args.zip, args.db, dest)
+            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, how, args.keep, settle)
+        return _ingest_one(args.zip, args.db, dest, how)
 
 
 def report_main(argv: list[str] | None = None) -> int:
