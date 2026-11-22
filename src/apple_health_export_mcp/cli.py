@@ -28,10 +28,10 @@ from .ingest import ShrinkRefused, ingest, is_ingested
 _EXPORT_ERRORS = (ValueError, zipfile.BadZipFile, zlib.error, EOFError, ET.ParseError, sqlite3.Error, OSError)
 
 
-def _ingest_one(zip_path: Path, db: Path | None, dest: Path, how: dict) -> int:
+def _ingest_one(zip_path: Path, db: Path | None, dest: Path, *, merge: bool, force: bool) -> int:
     print(f"Ingesting {zip_path} → {dest}")
     try:
-        counts = ingest(zip_path, db, **how)
+        counts = ingest(zip_path, db, merge=merge, force=force)
     except ShrinkRefused as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -45,7 +45,9 @@ def _ingest_one(zip_path: Path, db: Path | None, dest: Path, how: dict) -> int:
     return 0
 
 
-def _ingest_inbox(box: Path, db: Path | None, dest: Path, how: dict, keep: int | None, settle: float) -> int:
+def _ingest_inbox(
+    box: Path, db: Path | None, dest: Path, *, merge: bool, force: bool, keep: int | None, settle: float
+) -> int:
     try:
         path, why = inbox.pick(box, settle=settle)
         if path is None:
@@ -53,7 +55,7 @@ def _ingest_inbox(box: Path, db: Path | None, dest: Path, how: dict, keep: int |
             return 0
         if is_ingested(path, dest):
             print(f"Nothing new: {path.name} is already ingested.")
-        elif rc := _ingest_one(path, db, dest, how):
+        elif rc := _ingest_one(path, db, dest, merge=merge, force=force):
             return rc  # a failed ingest prunes nothing
         if keep:
             for old in inbox.prune(box, keep):
@@ -108,7 +110,6 @@ def main(argv: list[str] | None = None) -> int:
     if not CAN_LOCK:
         print("warning: no file locking on this platform; run one ingest at a time", file=sys.stderr)
     dest = args.db or db_path()
-    how = {"merge": args.merge, "force": args.force}
     with ExitStack() as stack:
         try:
             acquired = stack.enter_context(writer_lock(dest))
@@ -123,8 +124,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.inbox:
             settle = 2.0 if args.settle is None else args.settle
-            return _ingest_inbox(args.inbox.expanduser(), args.db, dest, how, args.keep, settle)
-        return _ingest_one(args.zip, args.db, dest, how)
+            return _ingest_inbox(
+                args.inbox.expanduser(),
+                args.db,
+                dest,
+                merge=args.merge,
+                force=args.force,
+                keep=args.keep,
+                settle=settle,
+            )
+        return _ingest_one(args.zip, args.db, dest, merge=args.merge, force=args.force)
 
 
 def report_main(argv: list[str] | None = None) -> int:

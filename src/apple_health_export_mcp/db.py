@@ -75,6 +75,21 @@ def db_path() -> Path:
     return Path(base) / "apple-health-export-mcp" / "health.db"
 
 
+# SQLite's per-database side files: WAL index and log, and the rollback journal.
+SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def sidecars(p: Path) -> list[Path]:
+    """The journal side files SQLite may keep next to DB file `p`."""
+    return [p.with_name(p.name + s) for s in SIDECARS]
+
+
+def remove_db_files(p: Path, *, main: bool = True) -> None:
+    """Delete DB file `p`'s side files, and `p` itself unless `main=False`."""
+    for f in ([p] if main else []) + sidecars(p):
+        f.unlink(missing_ok=True)
+
+
 def private_dir(d: Path) -> None:
     """Create directory `d` owner-only (0700) if missing; an existing one is left alone.
 
@@ -110,12 +125,12 @@ def _make_private(p: Path) -> None:
     """Create the DB file owner-only (0600) and tighten an existing one.
 
     Health data must not be world-readable. Only the directory we create is set to
-    0700 (`private_dir`). SQLite creates -wal/-shm with the main file's mode, but
-    tighten any stale ones too.
+    0700 (`private_dir`). SQLite creates its side files with the main file's mode,
+    but tighten any stale ones too.
     """
     private_dir(p.parent)
     os.close(os.open(p, os.O_CREAT | os.O_RDWR, 0o600))
-    for f in (p, p.with_name(p.name + "-wal"), p.with_name(p.name + "-shm")):
+    for f in (p, *sidecars(p)):
         if f.exists():
             os.chmod(f, 0o600)
 

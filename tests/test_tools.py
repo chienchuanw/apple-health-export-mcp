@@ -7,7 +7,7 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from apple_health_export_mcp import tools
-from apple_health_export_mcp.db import connect_readonly
+from apple_health_export_mcp.db import connect_readonly, remove_db_files
 from apple_health_export_mcp.ingest import ingest
 
 XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -47,10 +47,7 @@ def test_missing_db_names_the_real_ingest_command(tmp_path, monkeypatch):
 
 
 def _drop_sidecars(db):
-    for suffix in ("-wal", "-shm"):
-        side = db.with_name(db.name + suffix)
-        if side.exists():
-            side.unlink()
+    remove_db_files(db, main=False)
 
 
 def test_ingest_leaves_a_single_file_database(ingested_db):
