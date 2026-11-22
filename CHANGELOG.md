@@ -18,8 +18,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - Re-ingest now rebuilds the database from the export and swaps it in, so entries
   edited or deleted in the Health app no longer linger or double-count. It refuses
-  (exit 1) to replace a database with one that has under 90% of its records unless
-  `--force` is given. `--merge` keeps the old add-to-existing behaviour. Needs about
+  (exit 1) to replace a database with one that has under 90% of its records, or one
+  it can't read, unless `--force` is given. `--merge` keeps the old add-to-existing behaviour. Needs about
   twice the database size in free disk space while it runs (ADR-0016).
 - Every successful ingest records the zip's SHA-256 in `meta`, and ingest holds a
   `<db>.lock` file lock, so two ingests never write the same database at once.

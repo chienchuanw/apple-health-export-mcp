@@ -21,7 +21,7 @@ from xml.etree import ElementTree as ET
 
 from . import inbox, report
 from .db import CAN_LOCK, connect_readonly, db_path, writer_lock
-from .ingest import ShrinkRefused, ingest, is_ingested
+from .ingest import RebuildRefused, SwapFailed, ingest, is_ingested
 
 # What a broken or truncated export can raise mid-parse: a bad zip directory or CRC,
 # a corrupt deflate stream (zlib.error), a member cut short (EOFError), bad XML.
@@ -32,7 +32,7 @@ def _ingest_one(zip_path: Path, db: Path | None, dest: Path, *, merge: bool, for
     print(f"Ingesting {zip_path} → {dest}")
     try:
         counts = ingest(zip_path, db, merge=merge, force=force)
-    except ShrinkRefused as e:
+    except (RebuildRefused, SwapFailed) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     except _EXPORT_ERRORS as e:

@@ -54,8 +54,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    Two safety valves:
 
    - If the new export has under 90% of the current database's records (e.g. a
-     truncated export), ingest keeps the current database and exits 1. Re-run
-     with `--force` to replace it anyway.
+     truncated export), or the current database can't be read to compare, ingest
+     keeps the current database and exits 1. Re-run with `--force` to replace it
+     anyway.
    - `--merge` adds the export to the existing database instead (the previous
      behaviour), for when a newer export intentionally lacks older history, such
      as a new phone without Health iCloud sync. With `--merge`, rows the newer
@@ -63,7 +64,7 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
      both versions.
 
    On Windows the swap fails while another process (e.g. the MCP server) has the
-   database open.
+   database open. Ingest then exits 1 and the old database is kept as it was.
 
    For a recurring export, point ingest at a drop folder instead of a file (see
    [Drop-folder ingest](#drop-folder-ingest)).
