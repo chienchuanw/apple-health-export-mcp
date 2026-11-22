@@ -20,7 +20,7 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
 
 ## Setup
 
-1. **Export your data** on iPhone: _Settings → Health → tap your photo → Export All Health Data_. AirDrop/save the resulting `export.zip`.
+1. **Export your data** on iPhone: in the _Health_ app, tap your profile picture → _Export All Health Data_. AirDrop/save the resulting `export.zip`.
 
 2. **Install** with [uv](https://docs.astral.sh/uv/). Installing once (rather than
    `uvx` on every launch) keeps the process tree shallow, which matters for clean
@@ -67,7 +67,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    database open. Ingest then exits 1 and the old database is kept as it was.
 
    For a recurring export, point ingest at a drop folder instead of a file (see
-   [Drop-folder ingest](#drop-folder-ingest)).
+   [Drop-folder ingest](#drop-folder-ingest)). [`docs/automation.md`](docs/automation.md)
+   sets up a weekly pipeline on macOS with launchd, from the iPhone's export to a
+   report in your notes vault.
 
 4. **Add to your MCP client** (e.g. Claude Code `.mcp.json`). The bare command
    starts the stdio server; point it at the DB you just built.
@@ -206,7 +208,8 @@ It is safe to run as often as you like, e.g. from a file watcher. Each run:
 
 Errors (no health data in the zip, a corrupt XML, a missing folder) exit 1 with a one-line
 `error:` message. A failed ingest records no digest, so the next run retries it.
-File locking uses `fcntl` (macOS/Linux).
+File locking uses `fcntl` (macOS/Linux). To run it on a schedule, see
+[`docs/automation.md`](docs/automation.md).
 
 ## Weekly report
 
