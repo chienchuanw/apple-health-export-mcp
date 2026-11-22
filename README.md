@@ -47,6 +47,9 @@ export.zip ──(ingest, one-time ~1-3 min)──► health.db (SQLite) ──�
    newly supported data (e.g. workout distance / energy / heart rate) — run it
    again on the same or a newer `export.zip`.
 
+   For a recurring export, point ingest at a drop folder instead of a file (see
+   [Drop-folder ingest](#drop-folder-ingest)).
+
 4. **Add to your MCP client** (e.g. Claude Code `.mcp.json`). The bare command
    starts the stdio server; point it at the DB you just built.
 
@@ -149,6 +152,31 @@ Reusable coaching workflows the client can invoke (they orchestrate the tools an
 | `sleep_report(start?, end?)` | Sleep duration, stages, consistency                |
 
 Arguments are optional — they default to today / this week / this month / this year.
+
+## Drop-folder ingest
+
+For a weekly export, save each `export.zip` into one folder (e.g. an iCloud Drive folder
+the iPhone's share sheet can reach) and run:
+
+```bash
+apple-health-export-mcp-ingest --inbox ~/Library/Mobile\ Documents/com~apple~CloudDocs/HealthInbox --keep 1
+```
+
+It is safe to run as often as you like, e.g. from a file watcher. Each run:
+
+- picks the newest `*.zip` in the folder (hidden files, i.e. partial copies, are ignored);
+- **does nothing (exit 0)** when that file is not ready: still only an iCloud placeholder
+  (`.export.zip.icloud`), still being copied (its size changed within `--settle` seconds,
+  default 2), or not a complete zip yet;
+- **does nothing (exit 0)** when that exact file was already ingested: the last successful
+  ingest records the zip's SHA-256 (a manual `apple-health-export-mcp-ingest <zip>` counts too);
+- otherwise ingests it, and with `--keep N` then deletes all but the newest N zips.
+  Without `--keep` nothing is deleted;
+- exits 0 with "already running" if another ingest holds the lock (`<db>.lock`).
+
+Errors (no health data in the zip, a corrupt XML, a missing folder) exit 1 with a one-line
+`error:` message. A failed ingest records no digest, so the next run retries it.
+File locking uses `fcntl` (macOS/Linux).
 
 ## Weekly report
 
