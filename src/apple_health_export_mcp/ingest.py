@@ -10,12 +10,14 @@ Validated against a real tr_TR export (HealthKit Export Version 14, ~2.4M record
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import zipfile
 from collections.abc import Iterator
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
+from typing import BinaryIO
 from xml.etree import ElementTree as ET
 
 from .db import connect, connect_readonly, init_schema
@@ -212,28 +214,33 @@ _DIGEST = "source_sha256"  # identity of the zip's content
 _STAT = "source_stat"  # path|size|mtime_ns: a cache that spares re-hashing an unchanged file
 
 
-def sha256(path: Path) -> str:
-    """Hex SHA-256 of a file, read in 1 MB chunks (an export can be gigabytes)."""
+def _hash(f: BinaryIO) -> str:
+    """Hex SHA-256 of an open file from its current position, in 1 MB chunks."""
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(1 << 20):
-            h.update(chunk)
+    while chunk := f.read(1 << 20):
+        h.update(chunk)
     return h.hexdigest()
 
 
-def _stat_key(path: Path) -> str:
-    st = path.stat()
+def sha256(path: Path) -> str:
+    """Hex SHA-256 of a file (an export can be gigabytes, so it is streamed)."""
+    with open(path, "rb") as f:
+        return _hash(f)
+
+
+def _stat_key(path: Path, st: os.stat_result | None = None) -> str:
+    st = st or path.stat()
     return f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}"
 
 
-def is_ingested(zip_path: Path, db: Path) -> tuple[bool, str | None]:
-    """Was `zip_path` the last file fully ingested into `db`? Also return its digest, if computed.
+def is_ingested(zip_path: Path, db: Path) -> bool:
+    """Was `zip_path` the last file fully ingested into `db`?
 
     An unchanged path, size and mtime answer without reading the file. Otherwise the
     content hash decides: iCloud can rewrite the mtime of a file it re-downloads.
     """
     if not db.exists():
-        return False, None
+        return False
     conn = connect_readonly(db)
     try:
         meta = dict(conn.execute("SELECT k, v FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT)).fetchall())
@@ -241,17 +248,17 @@ def is_ingested(zip_path: Path, db: Path) -> tuple[bool, str | None]:
         meta = {}
     finally:
         conn.close()
-    if _DIGEST in meta and meta.get(_STAT) == _stat_key(zip_path):
-        return True, meta[_DIGEST]
-    digest = sha256(zip_path)
-    return digest == meta.get(_DIGEST), digest
+    if _DIGEST not in meta:
+        return False
+    return meta.get(_STAT) == _stat_key(zip_path) or sha256(zip_path) == meta[_DIGEST]
 
 
-def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: str | None = None) -> dict[str, int]:
+def ingest(zip_path: Path, db: Path | None = None, *, progress=print) -> dict[str, int]:
     """Parse `zip_path` into the DB; return row counts per table.
 
-    On success `meta` records the zip's digest (`digest` if the caller already hashed
-    it) and stat, so `--inbox` can skip a file that was already ingested (ADR-0015).
+    On success `meta` records the zip's digest and stat, so `--inbox` can skip a file
+    that was already ingested (ADR-0015). Both are taken from the same open file that
+    is parsed, so a file replaced mid-run is never marked as ingested.
     """
     zip_path = Path(zip_path).expanduser()
     conn = connect(db, create=True)
@@ -268,6 +275,26 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: st
     conn.execute("DELETE FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT))
     conn.commit()
 
+    with open(zip_path, "rb") as fh:
+        # Identity of the bytes about to be parsed, not of whatever the path holds later.
+        source = ((_DIGEST, _hash(fh)), (_STAT, _stat_key(zip_path, os.fstat(fh.fileno()))))
+        fh.seek(0)
+        counts = _parse(fh, conn, progress)
+    conn.executemany("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", source)
+    conn.commit()
+    conn.execute("PRAGMA synchronous=NORMAL")
+    # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
+    # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
+    # with a server connection attached the switch is refused ("database is locked"),
+    # but every row is already committed and connect_readonly copes with a WAL DB.
+    with suppress(sqlite3.OperationalError):
+        conn.execute("PRAGMA journal_mode=DELETE")
+    conn.close()
+    return counts
+
+
+def _parse(fh: BinaryIO, conn: sqlite3.Connection, progress) -> dict[str, int]:
+    """Stream the export's main XML from open zip file `fh` into `conn` in batches."""
     counts = dict.fromkeys(_SQL, 0)
     batches: dict[str, list[tuple]] = {k: [] for k in _SQL}
 
@@ -278,7 +305,7 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: st
                 rows.clear()
         conn.commit()
 
-    with zipfile.ZipFile(zip_path) as zf:
+    with zipfile.ZipFile(fh) as zf:
         main = _find_main_xml(zf)
         progress(f"Reading {main} ...")
         with zf.open(main) as stream:
@@ -289,17 +316,4 @@ def ingest(zip_path: Path, db: Path | None = None, *, progress=print, digest: st
                     flush()
                     progress(f"  {counts['record']:,} records, {counts['workout']:,} workouts")
     flush()
-    conn.executemany(
-        "INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)",
-        ((_DIGEST, digest or sha256(zip_path)), (_STAT, _stat_key(zip_path))),
-    )
-    conn.commit()
-    conn.execute("PRAGMA synchronous=NORMAL")
-    # WAL was an ingest speedup only. Leave a single self-contained file: the read-only
-    # server can't create -wal/-shm, and Linux SQLite deletes them on close. Best-effort:
-    # with a server connection attached the switch is refused ("database is locked"),
-    # but every row is already committed and connect_readonly copes with a WAL DB.
-    with suppress(sqlite3.OperationalError):
-        conn.execute("PRAGMA journal_mode=DELETE")
-    conn.close()
     return counts
