@@ -218,8 +218,9 @@ def get_training_load(
     Each week: sessions, total_min, total_km, total_kcal (units normalized as in
     `get_workouts`) and acwr = this week's minutes / the mean of the 4 weeks before it
     (null when that mean is 0). An acwr well above ~1.3 is a sharp load jump. Load is
-    minutes-based: the export has no per-workout intensity score. The last week may be
-    partial when `end` is not a Sunday. ADR-0017.
+    minutes-based: the export has no per-workout intensity score. Nothing after `end`
+    is counted: the last week runs Monday to `end`, so it is partial (and its acwr
+    reads low) unless `end` is a Sunday. ADR-0017.
     """
     with _store() as conn:
         return queries.training_load(conn, end, weeks)

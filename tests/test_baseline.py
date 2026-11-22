@@ -145,7 +145,7 @@ def test_training_load_is_one_row_per_week_oldest_first_with_acwr():
     _workout(conn, (monday + timedelta(days=1)).isoformat(), 80)
     weeks = queries.training_load(conn, END.isoformat(), weeks=2)
     assert [w.week_start for w in weeks] == ["2026-06-22", "2026-06-29"]
-    assert [w.week_end for w in weeks] == ["2026-06-28", "2026-07-05"]
+    assert [w.week_end for w in weeks] == ["2026-06-28", "2026-06-30"]  # the last week stops at `end`
     last = weeks[-1]
     assert (last.sessions, last.total_min, last.acwr) == (2, 200, 2.0)
     # The week before had 100 min against a chronic mean of (100+100+100+0)/4 = 75.
@@ -239,3 +239,26 @@ def test_workout_with_unknown_duration_unit_counts_as_a_session_with_no_minutes(
     )
     (w,) = queries.training_load(conn, END.isoformat(), weeks=1)
     assert (w.sessions, w.total_min) == (1, 0)
+
+
+def test_training_load_stops_at_end():
+    conn = _db()
+    _workout(conn, "2026-06-29", 30)  # Monday, before END (Tuesday)
+    _workout(conn, "2026-07-02", 90)  # Thursday, after END: not part of the answer yet
+    (w,) = queries.training_load(conn, END.isoformat(), weeks=1)
+    assert (w.week_start, w.week_end, w.sessions, w.total_min) == ("2026-06-29", "2026-06-30", 1, 30)
+
+
+def test_z_is_null_when_the_spread_rounds_to_zero():
+    """z must not contradict the reported baseline_sd of 0.0."""
+    conn = _db()
+    for i in range(28):
+        _rec(conn, RHR, 50.001 if i == 0 else 50, _day(7 + i))
+    _rec(conn, RHR, 51, _day(0))
+    b = queries.baseline(conn, RHR, END.isoformat())
+    assert b.baseline_sd == 0 and b.z is None
+
+
+def test_readiness_check_warns_that_the_current_week_is_partial():
+    text = prompts.readiness_check()
+    assert "weeks=2" in text and "partial" in text
