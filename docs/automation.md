@@ -58,8 +58,8 @@ what belongs in the vault. They are also created owner-only.
 
    Make sure new exports are stored on the Mac, not only in the cloud. On macOS 15
    (Sequoia) and later, right-click the folder and choose **Keep Downloaded**. On older
-   macOS, turn off *Optimize Mac Storage* in the iCloud Drive settings (under your Apple
-   Account in System Settings). Otherwise the ingest waits for the download (see
+   macOS, turn off *Optimize Mac Storage* in the iCloud Drive settings (under your name
+   in System Settings). Otherwise the ingest waits for the download (see
    [Gotchas](#gotchas)).
 
 3. **Pick the vault folder** for the notes, e.g. `/Users/you/Documents/Vault/Health`.
@@ -253,11 +253,11 @@ server in its own config file (`/Users/you/.config/apple-health.mcp.json`):
 }
 ```
 
-Then, after the report has been written (e.g. as a second command run from the report
-agent through `/bin/sh -c`). Use the absolute path from `which claude`, because launchd
-has no `PATH`:
+Then save this script, e.g. as `/Users/you/bin/health-review.sh` (`chmod +x` it). Use the
+absolute path from `which claude`, because launchd has no `PATH`:
 
 ```bash
+#!/bin/sh
 monday=$(date -v-7d -v-mon +%F); sunday=$(date -v-7d -v-mon -v+6d +%F)
 week=$(date -v-7d +%G-W%V)  # the note the report just wrote, e.g. 2026-W47
 if review=$(/Users/you/.local/bin/claude -p "Review my health and training for ${monday} \
@@ -267,11 +267,18 @@ HKQuantityTypeIdentifierHeartRateVariabilitySDNN. Be concise; end with one recom
     --mcp-config /Users/you/.config/apple-health.mcp.json --strict-mcp-config \
     --tools "" --allowedTools "mcp__apple-health"); then
   printf '\n## Review\n\n%s\n' "$review" >> "/Users/you/Documents/Vault/Health/${week}.md"
+else
+  printf '%s\n' "$review" >&2; exit 1
 fi
 ```
 
+Run it only after the report succeeded, by chaining the two with `&&` in the report
+agent's `ProgramArguments`: `/bin/sh`, `-c`, and
+`/Users/you/.local/bin/apple-health-export-mcp-report && /Users/you/bin/health-review.sh`.
+With `;` instead, a failed report would leave a note holding only the review heading.
+
 The review is appended only if `claude` succeeds, so a failure (e.g. not logged in) never
-ends up in the note. The report compares the whole file with what it would write, so
+ends up in the note: its message goes to the error log and the job exits 1. The report compares the whole file with what it would write, so
 **any** later rerun of the report for that week overwrites the note and drops the review.
 Keep anything you want to keep in a separate note.
 
