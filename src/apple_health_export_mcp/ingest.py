@@ -241,13 +241,11 @@ def is_ingested(zip_path: Path, db: Path) -> bool:
     """
     if not db.exists():
         return False
-    conn = connect_readonly(db)
     try:
-        meta = dict(conn.execute("SELECT k, v FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT)).fetchall())
-    except sqlite3.OperationalError:  # a DB older than the meta table
-        meta = {}
-    finally:
-        conn.close()
+        with closing(connect_readonly(db)) as conn:
+            meta = dict(conn.execute("SELECT k, v FROM meta WHERE k IN (?, ?)", (_DIGEST, _STAT)).fetchall())
+    except sqlite3.Error:  # older than the meta table, or unreadable: ingest decides (ADR-0016)
+        return False
     if _DIGEST not in meta:
         return False
     return meta.get(_STAT) == _stat_key(zip_path) or sha256(zip_path) == meta[_DIGEST]
@@ -376,11 +374,13 @@ def _swap(building: Path, target: Path, force: bool, progress) -> None:
                 os.replace(f, parked)
                 aside.append((parked, f))
         os.replace(building, target)
-    except OSError as e:
+    except BaseException as e:  # incl. Ctrl-C: the old DB must not be left without them
         for parked, f in aside:
             with suppress(OSError):
                 os.replace(parked, f)
         remove_db_files(building)
+        if not isinstance(e, OSError):
+            raise
         raise SwapFailed(
             f"cannot replace {target}: {e.strerror or e}. Is another program (e.g. the MCP "
             "server on Windows) holding it open? Kept the current database."

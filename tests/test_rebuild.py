@@ -294,3 +294,56 @@ def test_cli_failed_rename_blames_the_database_not_the_zip(tmp_path, monkeypatch
     assert main([str(_export(tmp_path / "b.zip", B)), "--db", str(db)]) == 1
     err = capsys.readouterr().err
     assert err.startswith("error: cannot replace") and "b.zip" not in err
+
+
+# --- review round 2 of PR #20 --------------------------------------------------------
+
+
+def test_lock_is_taken_on_the_resolved_db_path(tmp_path, capsys):
+    """An ingest through a symlink and one through the real path must exclude each other."""
+    fcntl = pytest.importorskip("fcntl")
+    real = tmp_path / "data" / "h.db"
+    ingest(_export(tmp_path / "a.zip", A), real, progress=_quiet)
+    link = tmp_path / "h.db"
+    link.symlink_to(real)
+    with open(real.with_name("h.db.lock"), "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert main([str(_export(tmp_path / "b.zip", B)), "--db", str(link)]) == 1
+    assert "already running" in capsys.readouterr().err
+    assert _weights(real) == ["80", "800"]
+
+
+def test_interrupted_swap_puts_the_side_files_back(tmp_path, monkeypatch):
+    db = tmp_path / "h.db"
+    ingest(_export(tmp_path / "a.zip", A), db, progress=_quiet)
+    shm = db.with_name(db.name + "-shm")
+    shm.write_bytes(b"old side file")
+    real_replace = os.replace
+
+    def interrupted(src, dst):  # Ctrl-C lands between moving side files and the rename
+        if str(src).endswith(".building"):
+            raise KeyboardInterrupt
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        ingest(_export(tmp_path / "b.zip", B), db, progress=_quiet)
+    assert shm.read_bytes() == b"old side file"
+    assert not list(tmp_path.glob("*.swap"))
+    assert not list(tmp_path.glob("h.db.building*"))
+
+
+@pytest.mark.parametrize(("force", "rc"), [(False, 1), (True, 0)])
+def test_inbox_unreadable_db_is_refused_or_replaced_with_force(tmp_path, capsys, force, rc):
+    box = tmp_path / "box"
+    box.mkdir()
+    _export(box / "a.zip", A)
+    db = tmp_path / "h.db"
+    db.write_bytes(b"this is not an SQLite database" * 100)
+    argv = ["--inbox", str(box), "--db", str(db), "--settle", "0"] + (["--force"] if force else [])
+    assert main(argv) == rc
+    if force:
+        assert _count(db) == 22
+    else:
+        err = capsys.readouterr().err
+        assert err.startswith("error: cannot read the current database") and "--force" in err
