@@ -69,8 +69,15 @@ def pick(
 
 
 def prune(box: Path, keep: int) -> list[Path]:
-    """Delete all but the newest `keep` zips in `box`; return what was deleted."""
-    old = _newest_first(p for p in box.iterdir() if p.is_file() and _is_zip(p))[keep:]
+    """Delete all but the newest `keep` zips in `box`; return what was deleted.
+
+    If the folder changes while it is being read, nothing is deleted this run; the
+    next run (the change fires the watcher again) prunes.
+    """
+    try:
+        old = _newest_first(p for p in box.iterdir() if p.is_file() and _is_zip(p))[keep:]
+    except FileNotFoundError:
+        return []
     for p in old:
         p.unlink(missing_ok=True)  # someone may have removed it already
     return old
